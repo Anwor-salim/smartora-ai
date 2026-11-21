@@ -19,26 +19,45 @@ class WebhookController extends Controller
      */
     public function whatsapp(Request $request): JsonResponse
     {
-        // Support multiple payload styles:
-        // 1. Direct: ['company_whatsapp' => '...', 'customer_phone' => '...', 'message' => '...']
-        // 2. n8n style: ['from' => '...', 'to' => '...', 'body' => '...']
-        // 3. Company Slug / ID: ['company_id' => 1, 'phone' => '...', 'message' => '...']
+        // Support multiple payload styles (Direct, n8n, WAHA nested):
+        $payload = $request->input('payload');
+        if (!is_array($payload)) {
+            $payload = [];
+        }
+
+        // 1. Check if fromMe (ignore bot's own sent messages)
+        $fromMe = $request->input('fromMe') ?? ($payload['fromMe'] ?? false);
+        if ($fromMe) {
+            return response()->json(['status' => 'ignored', 'message' => 'Outgoing bot message ignored']);
+        }
 
         $customerPhone = $request->input('customer_phone')
             ?? $request->input('from')
             ?? $request->input('phone')
-            ?? $request->input('sender');
+            ?? $request->input('sender')
+            ?? ($payload['from'] ?? null)
+            ?? ($payload['sender'] ?? null);
 
         $companyIdentifier = $request->input('company_whatsapp')
             ?? $request->input('to')
             ?? $request->input('recipient')
             ?? $request->input('company_id')
-            ?? $request->input('company_slug');
+            ?? $request->input('company_slug')
+            ?? ($payload['to'] ?? null)
+            ?? ($payload['recipient'] ?? null);
 
         $messageText = $request->input('message')
             ?? $request->input('body')
             ?? $request->input('text')
+            ?? ($payload['body'] ?? null)
+            ?? ($payload['text'] ?? null)
             ?? '';
+
+        // Clean whatsapp @c.us or @s.whatsapp.net suffix
+        if ($customerPhone && str_contains($customerPhone, '@')) {
+            $customerPhone = explode('@', $customerPhone)[0];
+        }
+        $customerPhone = preg_replace('/\D/', '', (string)$customerPhone);
 
         if (!$customerPhone || !$messageText) {
             return response()->json([

@@ -1,0 +1,176 @@
+{
+  "id": "smartora-wa-auto-reply-1",
+  "name": "SmartOra AI - WhatsApp Auto-Responder",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-inbound",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "node-wa-inbound",
+      "name": "WhatsApp Inbound Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "webhookId": "smartora-wa-inbound"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst webhookBody = input.body || input;\nconst payload = webhookBody.payload || webhookBody;\n\n// 1. Ignore outgoing messages from ourselves\nif (payload.fromMe === true || payload._data?.key?.fromMe === true) {\n  return [];\n}\n\n// 2. Extract message text\nlet rawText = '';\nif (typeof payload.body === 'string') {\n  rawText = payload.body;\n} else if (payload.message && typeof payload.message.conversation === 'string') {\n  rawText = payload.message.conversation;\n} else if (payload._data?.message?.conversation && typeof payload._data.message.conversation === 'string') {\n  rawText = payload._data.message.conversation;\n} else if (payload._data?.message?.extendedTextMessage?.text) {\n  rawText = payload._data.message.extendedTextMessage.text;\n} else if (typeof payload.text === 'string') {\n  rawText = payload.text;\n}\n\nif (!rawText || typeof rawText !== 'string' || !rawText.trim()) {\n  return [];\n}\n\n// 3. Extract Customer Phone and ChatId\nconst remoteJid = payload._data?.key?.remoteJid || payload.from || '';\nconst remoteJidAlt = payload._data?.key?.remoteJidAlt || '';\n\nlet customerPhone = '';\nif (remoteJidAlt && remoteJidAlt.includes('@')) {\n  customerPhone = remoteJidAlt.split('@')[0].replace(/\\D/g, '');\n} else if (remoteJid && (remoteJid.includes('@s.whatsapp.net') || remoteJid.includes('@c.us'))) {\n  customerPhone = remoteJid.split('@')[0].replace(/\\D/g, '');\n} else {\n  customerPhone = remoteJid.replace(/\\D/g, '');\n}\n\nconst customerChatId = customerPhone ? (customerPhone + '@c.us') : (payload.from || remoteJid);\n\n// 4. Extract Customer Name\nlet name = payload.pushName || payload._data?.pushName || 'عميل كريم';\nname = name.replace(/^~+|~+$/g, '').trim();\n\nreturn [{\n  json: {\n    customer_phone: customerPhone,\n    customer_chatId: customerChatId,\n    customer_name: name,\n    raw_message: rawText,\n    manager_chatId: '967730881873@c.us'\n  }\n}];"
+      },
+      "id": "node-parse-sender",
+      "name": "Parse Message & Sender",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://smartora-app:8000/api/webhook/whatsapp",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  customer_phone: $json.customer_phone,\n  company_whatsapp: '967730881873',\n  message: $json.raw_message\n}) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "node-smartora-ai",
+      "name": "SmartOra AI Engine",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-has-reply",
+              "leftValue": "={{ $json.reply }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-check-reply",
+      "name": "Has Reply?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://smartora-waha:3000/api/sendText",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Api-Key",
+              "value": "smartora_secret_api_key_2026"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  session: 'default',\n  chatId: $('Parse Message & Sender').item.json.customer_chatId,\n  text: $json.reply\n}) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "node-send-reply",
+      "name": "Send WhatsApp Reply (WAHA)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 300]
+    }
+  ],
+  "connections": {
+    "WhatsApp Inbound Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Message & Sender",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Message & Sender": {
+      "main": [
+        [
+          {
+            "node": "SmartOra AI Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SmartOra AI Engine": {
+      "main": [
+        [
+          {
+            "node": "Has Reply?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Reply?": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reply (WAHA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

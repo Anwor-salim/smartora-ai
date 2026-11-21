@@ -27,13 +27,23 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->login()
-            ->brandName('سمارتورا AI - إدارة المنصة')
+            ->brandName(fn () => app()->getLocale() === 'ar' ? 'سمارتورا AI - إدارة المنصة' : 'SmartOra AI - Admin Panel')
             ->colors([
                 'primary' => Color::Emerald,
             ])
             ->font('Tajawal')
             ->sidebarCollapsibleOnDesktop()
             ->maxContentWidth(\Filament\Support\Enums\MaxWidth::Full)
+            ->renderHook(
+                \Filament\View\PanelsRenderHook::USER_MENU_BEFORE,
+                fn () => view('filament.components.language-switch'),
+            )
+            ->userMenuItems([
+                \Filament\Navigation\MenuItem::make()
+                    ->label(fn () => app()->getLocale() === 'ar' ? 'English (EN)' : 'العربية (AR)')
+                    ->icon('heroicon-o-language')
+                    ->url(fn () => route('switch-language', ['locale' => app()->getLocale() === 'ar' ? 'en' : 'ar'])),
+            ])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\\Filament\\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')
             ->pages([
@@ -47,6 +57,7 @@ class AdminPanelProvider extends PanelProvider
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,
                 StartSession::class,
+                \App\Http\Middleware\SetLocaleMiddleware::class,
                 AuthenticateSession::class,
                 ShareErrorsFromSession::class,
                 VerifyCsrfToken::class,

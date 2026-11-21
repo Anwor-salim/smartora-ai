@@ -26,13 +26,23 @@ class CompanyPanelProvider extends PanelProvider
             ->id('company')
             ->path('company')
             ->login()
-            ->brandName('سمارتورا AI - بوابة الشركات')
+            ->brandName(fn () => app()->getLocale() === 'ar' ? 'سمارتورا AI - بوابة الشركات' : 'SmartOra AI - Company Portal')
             ->colors([
                 'primary' => Color::Sky,
             ])
             ->font('Tajawal')
             ->sidebarCollapsibleOnDesktop()
             ->maxContentWidth(\Filament\Support\Enums\MaxWidth::Full)
+            ->renderHook(
+                \Filament\View\PanelsRenderHook::USER_MENU_BEFORE,
+                fn () => view('filament.components.language-switch'),
+            )
+            ->userMenuItems([
+                \Filament\Navigation\MenuItem::make()
+                    ->label(fn () => app()->getLocale() === 'ar' ? 'English (EN)' : 'العربية (AR)')
+                    ->icon('heroicon-o-language')
+                    ->url(fn () => route('switch-language', ['locale' => app()->getLocale() === 'ar' ? 'en' : 'ar'])),
+            ])
             ->discoverResources(in: app_path('Filament/Company/Resources'), for: 'App\\Filament\\Company\\Resources')
             ->discoverPages(in: app_path('Filament/Company/Pages'), for: 'App\\Filament\\Company\\Pages')
             ->pages([
@@ -46,6 +56,7 @@ class CompanyPanelProvider extends PanelProvider
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,
                 StartSession::class,
+                \App\Http\Middleware\SetLocaleMiddleware::class,
                 AuthenticateSession::class,
                 ShareErrorsFromSession::class,
                 VerifyCsrfToken::class,

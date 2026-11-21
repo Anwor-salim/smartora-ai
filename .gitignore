@@ -1,0 +1,32 @@
+# Environment & Secrets
+.env
+.env.backup
+.env.production
+*.env
+
+# Dependencies
+vendor/
+node_modules/
+.nuxt/
+.output/
+
+# Databases
+*.sqlite
+*.sqlite-journal
+
+# Storage & Cache
+backend/storage/*.key
+backend/storage/logs/
+backend/storage/framework/cache/
+backend/storage/framework/sessions/
+backend/storage/framework/views/
+backend/public/storage
+backend/public/hot
+backend/public/build/
+
+# IDE & OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

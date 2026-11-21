@@ -1,0 +1,67 @@
+<?php
+
+use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CompanyController;
+use App\Http\Controllers\Api\WebhookController;
+use Illuminate\Support\Facades\Route;
+
+// Public Authentication
+Route::prefix('auth')->group(function () {
+    Route::post('/login', [AuthController::class, 'login']);
+});
+
+// Inbound WhatsApp Webhook (For WhatsApp API & n8n)
+Route::post('/webhook/whatsapp', [WebhookController::class, 'whatsapp']);
+
+// Public read of active companies list for simulator / dropdown
+Route::get('/companies/public', function () {
+    return response()->json([
+        'companies' => \App\Models\Company::select('id', 'name', 'status', 'whatsapp_number', 'subscription_expires_at')
+            ->get()
+            ->map(function ($c) {
+                return [
+                    'id' => $c->id,
+                    'name' => $c->name,
+                    'is_active' => $c->isSubscriptionActive(),
+                    'whatsapp_number' => $c->whatsapp_number,
+                ];
+            })
+    ]);
+});
+
+// Protected Routes
+Route::middleware('auth:sanctum')->group(function () {
+    // Current User
+    Route::get('/auth/me', [AuthController::class, 'me']);
+    Route::post('/auth/logout', [AuthController::class, 'logout']);
+
+    // Live AI Test Chat from Dashboard
+    Route::post('/ai/test-chat', [WebhookController::class, 'testChat']);
+
+    // Direct alias for companies list
+    Route::get('/companies', [AdminController::class, 'companies']);
+
+    // Super Admin Routes
+    Route::prefix('admin')->group(function () {
+        Route::get('/dashboard', [AdminController::class, 'dashboard']);
+        Route::get('/companies', [AdminController::class, 'companies']);
+        Route::post('/companies', [AdminController::class, 'createCompany']);
+        Route::post('/companies/{id}/toggle-status', [AdminController::class, 'toggleStatus']);
+        Route::post('/companies/{id}/extend-subscription', [AdminController::class, 'extendSubscription']);
+        Route::delete('/companies/{id}', [AdminController::class, 'deleteCompany']);
+        Route::get('/notifications', [AdminController::class, 'notifications']);
+        Route::post('/notifications/{id}/read', [AdminController::class, 'markNotificationRead']);
+    });
+
+    // Company Portal Routes
+    Route::prefix('company')->group(function () {
+        Route::get('/profile', [CompanyController::class, 'profile']);
+        Route::put('/profile', [CompanyController::class, 'updateProfile']);
+        Route::get('/documents', [CompanyController::class, 'documents']);
+        Route::post('/documents/upload', [CompanyController::class, 'uploadDocument']);
+        Route::delete('/documents/{id}', [CompanyController::class, 'deleteDocument']);
+        Route::get('/conversations', [CompanyController::class, 'conversations']);
+        Route::get('/conversations/{id}', [CompanyController::class, 'conversationDetail']);
+    });
+});

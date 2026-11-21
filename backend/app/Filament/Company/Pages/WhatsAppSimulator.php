@@ -1,0 +1,89 @@
+<?php
+
+namespace App\Filament\Company\Pages;
+
+use App\Models\Company;
+use App\Services\AiChatService;
+use Filament\Notifications\Notification;
+use Filament\Pages\Page;
+
+class WhatsAppSimulator extends Page
+{
+    protected static ?string $navigationIcon = 'heroicon-o-chat-bubble-bottom-center-text';
+
+    protected static string $view = 'filament.company.pages.whatsapp-simulator';
+
+    protected static ?string $title = 'محاكي الواتساب الذكي (تجربة البوت)';
+    protected static ?string $navigationLabel = 'محاكي الواتساب';
+    protected static ?int $navigationSort = 4;
+
+    public string $customerPhone = '96777000888';
+    public string $inputMessage = '';
+    public array $chatHistory = [];
+
+    public function mount(): void
+    {
+        $this->resetChat();
+    }
+
+    public function getCompany(): ?Company
+    {
+        return auth()->user()?->company ?? Company::first();
+    }
+
+    public function resetChat(): void
+    {
+        $this->chatHistory = [];
+        $company = $this->getCompany();
+        if ($company) {
+            $greeting = $company->settings['greeting_message'] 
+                ?? "مرحباً بك في {$company->name}! كيف يمكننا خدمتك اليوم؟";
+            
+            $this->chatHistory[] = [
+                'sender' => 'bot',
+                'message' => $greeting,
+                'time' => now()->format('H:i'),
+            ];
+        }
+    }
+
+    public function sendMessage(): void
+    {
+        $text = trim($this->inputMessage);
+        if (empty($text)) {
+            return;
+        }
+
+        $company = $this->getCompany();
+        if (! $company) {
+            Notification::make()->title('لا توجد منشأة مرتبطة بحسابك')->danger()->send();
+            return;
+        }
+
+        // Add user message
+        $this->chatHistory[] = [
+            'sender' => 'user',
+            'message' => $text,
+            'time' => now()->format('H:i'),
+        ];
+        $this->inputMessage = '';
+
+        // Call AI Service
+        try {
+            $aiService = app(AiChatService::class);
+            $res = $aiService->handleCustomerMessage($company, $this->customerPhone, $text);
+
+            $this->chatHistory[] = [
+                'sender' => 'bot',
+                'message' => $res['reply'] ?? 'لم يتم استلام رد من المحرك.',
+                'time' => now()->format('H:i'),
+            ];
+        } catch (\Throwable $e) {
+            $this->chatHistory[] = [
+                'sender' => 'bot',
+                'message' => 'حدث خطأ: ' . $e->getMessage(),
+                'time' => now()->format('H:i'),
+            ];
+        }
+    }
+}

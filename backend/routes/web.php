@@ -12,12 +12,20 @@ Route::get('/', function () {
     return redirect('/company/login');
 });
 
-Route::get('/switch-language/{locale}', function (string $locale) {
+$handleLocaleSwitch = function (string $locale) {
     if (in_array($locale, ['ar', 'en'])) {
         session(['locale' => $locale]);
         app()->setLocale($locale);
     }
+    $referer = request()->headers->get('referer');
+    if ($referer) {
+        return redirect()->away($referer);
+    }
     return redirect()->back();
-})->name('switch-language');
+};
+
+Route::get('/switch-language/{locale}', $handleLocaleSwitch)->name('switch-language');
+Route::get('/company/switch-language/{locale}', $handleLocaleSwitch)->name('company.switch-language');
+Route::get('/admin/switch-language/{locale}', $handleLocaleSwitch)->name('admin.switch-language');
 
 

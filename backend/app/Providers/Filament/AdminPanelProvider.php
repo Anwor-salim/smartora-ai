@@ -42,7 +42,7 @@ class AdminPanelProvider extends PanelProvider
                 \Filament\Navigation\MenuItem::make()
                     ->label(fn () => app()->getLocale() === 'ar' ? 'English (EN)' : 'العربية (AR)')
                     ->icon('heroicon-o-language')
-                    ->url(fn () => route('switch-language', ['locale' => app()->getLocale() === 'ar' ? 'en' : 'ar'])),
+                    ->url(fn () => route('admin.switch-language', ['locale' => app()->getLocale() === 'ar' ? 'en' : 'ar'])),
             ])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\\Filament\\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')

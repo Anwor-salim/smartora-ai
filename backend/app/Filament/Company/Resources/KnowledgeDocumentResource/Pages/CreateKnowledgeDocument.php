@@ -16,7 +16,13 @@ class CreateKnowledgeDocument extends CreateRecord
 
     protected function handleRecordCreation(array $data): Model
     {
-        $companyId = auth()->user()->company_id;
+        $user = auth()->user();
+        $companyId = $user?->company_id ?? \App\Models\Company::latest()->first()?->id;
+
+        if (! $companyId) {
+            Notification::make()->title('يجب إضافة شركة أولاً قبل رفع المستندات')->danger()->send();
+            throw new \Exception('No company found to associate this document with.');
+        }
         $filePath = $data['file_path'];
         $fullPath = Storage::disk('local')->path($filePath);
         $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));

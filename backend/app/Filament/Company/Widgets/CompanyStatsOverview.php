@@ -13,7 +13,12 @@ class CompanyStatsOverview extends BaseWidget
 
     protected function getStats(): array
     {
-        $company = auth()->user()?->company ?? \App\Models\Company::first();
+        $user = auth()->user();
+        if (! $user) {
+            return [];
+        }
+
+        $company = $user->isCompanyAdmin() ? $user->company : ($user->company ?? \App\Models\Company::first());
         if (! $company) {
             return [];
         }

@@ -28,7 +28,16 @@ class WhatsAppSimulator extends Page
 
     public function getCompany(): ?Company
     {
-        return auth()->user()?->company ?? Company::first();
+        $user = auth()->user();
+        if (! $user) {
+            return null;
+        }
+
+        if ($user->isCompanyAdmin()) {
+            return $user->company;
+        }
+
+        return $user->company ?? Company::first();
     }
 
     public function resetChat(): void

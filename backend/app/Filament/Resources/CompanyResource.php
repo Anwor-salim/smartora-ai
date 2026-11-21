@@ -154,26 +154,32 @@ class CompanyResource extends Resource
 
                         Forms\Components\Tabs\Tab::make('حساب مدير الشركة (تسجيل دخول)')
                             ->icon('heroicon-o-user-plus')
-                            ->visibleOn('create')
                             ->schema([
                                 Forms\Components\Placeholder::make('info')
-                                    ->content('سيتم إنشاء حساب مستخدم تلقائياً لمالك المنشأة لتسجيل دخوله إلى بوابة الشركة:')
+                                    ->content('يتم إنشاء حساب مستخدم تلقائياً لمالك المنشأة لتسجيل دخوله إلى لوحة تحكم الشركة (/company). إذا تركت البريد فارغاً، سيتم اعتماد بريد المنشأة تلقائياً:')
                                     ->columnSpanFull(),
 
                                 Forms\Components\Grid::make(3)->schema([
                                     Forms\Components\TextInput::make('admin_user_name')
-                                        ->label('اسم مالك الشركة')
-                                        ->placeholder('مثال: محمد العمري'),
+                                        ->label('اسم مالك / مدير الشركة')
+                                        ->placeholder('مثال: محمد العمري')
+                                        ->formatStateUsing(fn (?Company $record) => $record?->users()->where('role', 'company_admin')->first()?->name ?? ('مدير ' . ($record?->name ?? '')))
+                                        ->dehydrated(false),
 
                                     Forms\Components\TextInput::make('admin_user_email')
                                         ->label('البريد الإلكتروني للدخول')
                                         ->email()
-                                        ->placeholder('client@company.com'),
+                                        ->placeholder('client@company.com')
+                                        ->helperText('إذا ترك فارغاً سيتم استخدام البريد الإلكتروني للمنشأة.')
+                                        ->formatStateUsing(fn (?Company $record) => $record?->users()->where('role', 'company_admin')->first()?->email ?? $record?->email)
+                                        ->dehydrated(false),
 
                                     Forms\Components\TextInput::make('admin_user_password')
-                                        ->label('كلمة المرور')
+                                        ->label('كلمة المرور للدخول')
                                         ->password()
-                                        ->default('password123'),
+                                        ->default('password123')
+                                        ->helperText('اتركه فارغاً عند التعديل للإبقاء على كلمة المرور الحالية (الافتراضية: password123).')
+                                        ->dehydrated(false),
                                 ]),
                             ]),
                     ])
@@ -191,6 +197,15 @@ class CompanyResource extends Resource
                     ->sortable()
                     ->weight('bold')
                     ->description(fn (Company $record) => $record->email ?? $record->phone),
+
+                Tables\Columns\TextColumn::make('manager_login')
+                    ->label('حساب الدخول (المدير)')
+                    ->state(fn (Company $record) => $record->users()->where('role', 'company_admin')->first()?->email ?? $record->email ?? 'لم ينشأ')
+                    ->icon('heroicon-m-user')
+                    ->badge()
+                    ->color(fn ($state) => $state === 'لم ينشأ' ? 'danger' : 'success')
+                    ->copyable()
+                    ->tooltip('انقر لنسخ البريد الإلكتروني لدخول لوحة المنشأة'),
 
                 Tables\Columns\TextColumn::make('whatsapp_number')
                     ->label('رقم الواتساب')
@@ -345,6 +360,61 @@ class CompanyResource extends Resource
                             ->success()
                             ->send();
                     }),
+
+                Tables\Actions\Action::make('manage_credentials')
+                    ->label('بيانات الدخول')
+                    ->icon('heroicon-o-key')
+                    ->color('info')
+                    ->modalHeading(fn (Company $record) => "بيانات دخول مدير منشأة: {$record->name}")
+                    ->modalDescription('يمكنك من هنا عرض البريد الإلكتروني أو تعيين كلمة مرور جديدة لمالك الشركة للدخول إلى لوحة الشركة (/company/login)')
+                    ->form([
+                        Forms\Components\TextInput::make('manager_email')
+                            ->label('البريد الإلكتروني للدخول')
+                            ->default(fn (Company $record) => $record->users()->where('role', 'company_admin')->first()?->email ?? $record->email ?? ($record->slug . '@smartora.com'))
+                            ->required()
+                            ->email(),
+                        Forms\Components\TextInput::make('new_password')
+                            ->label('تعيين كلمة مرور جديدة')
+                            ->placeholder('اتركه فارغاً للإبقاء على الحالية (الافتراضية: password123)')
+                            ->password(),
+                    ])
+                    ->action(function (Company $record, array $data) {
+                        $user = $record->users()->where('role', 'company_admin')->first();
+                        $targetEmail = trim($data['manager_email']);
+                        
+                        $fields = [
+                            'name' => $user?->name ?? ('مدير ' . $record->name),
+                            'email' => $targetEmail,
+                            'role' => 'company_admin',
+                            'company_id' => $record->id,
+                            'status' => 'active',
+                            'phone' => $record->phone ?? $record->whatsapp_number,
+                        ];
+
+                        if (!empty($data['new_password'])) {
+                            $fields['password'] = \Illuminate\Support\Facades\Hash::make(trim($data['new_password']));
+                        } elseif (!$user) {
+                            $fields['password'] = \Illuminate\Support\Facades\Hash::make('password123');
+                        }
+
+                        if ($user) {
+                            $user->update($fields);
+                        } else {
+                            \App\Models\User::create($fields);
+                        }
+
+                        Notification::make()
+                            ->title('تم حفظ وتحديث بيانات دخول المنشأة بنجاح 🎉')
+                            ->body("البريد الإلكتروني: {$targetEmail}\nرابط الدخول: " . url('/company/login'))
+                            ->success()
+                            ->send();
+                    }),
+
+                Tables\Actions\Action::make('open_portal')
+                    ->label('بوابة الشركة')
+                    ->icon('heroicon-o-arrow-top-right-on-square')
+                    ->color('gray')
+                    ->url(url('/company/login'), shouldOpenInNewTab: true),
 
                 Tables\Actions\EditAction::make(),
                 Tables\Actions\DeleteAction::make(),

@@ -27,8 +27,11 @@ class KnowledgeDocumentResource extends Resource
     {
         $query = parent::getEloquentQuery();
 
-        if (auth()->check() && auth()->user()->company_id) {
-            $query->where('company_id', auth()->user()->company_id);
+        $user = auth()->user();
+        if ($user && ! $user->isSuperAdmin()) {
+            $query->where('company_id', $user->company_id ?: 0);
+        } elseif ($user && $user->company_id) {
+            $query->where('company_id', $user->company_id);
         }
 
         return $query;

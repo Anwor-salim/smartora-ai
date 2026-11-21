@@ -26,7 +26,14 @@ class CompanyPanelProvider extends PanelProvider
             ->id('company')
             ->path('company')
             ->login()
-            ->brandName(fn () => app()->getLocale() === 'ar' ? 'سمارتورا AI - بوابة الشركات' : 'SmartOra AI - Company Portal')
+            ->brandName(function () {
+                $user = auth()->user();
+                $companyName = $user?->company?->name;
+                if ($companyName) {
+                    return $companyName . ' | سمارتورا AI';
+                }
+                return app()->getLocale() === 'ar' ? 'سمارتورا AI - بوابة الشركات' : 'SmartOra AI - Company Portal';
+            })
             ->colors([
                 'primary' => Color::Sky,
             ])

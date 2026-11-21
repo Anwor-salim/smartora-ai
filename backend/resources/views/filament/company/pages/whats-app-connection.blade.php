@@ -3,7 +3,7 @@
         $company = $this->getCompany();
     @endphp
 
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6" dir="rtl">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6" dir="rtl" @if($connectionStatus !== 'connected') wire:poll.5s="refreshStatus" @endif>
         <!-- Main Connection Card (QR Scanner & Pairing) -->
         <div class="lg:col-span-7 space-y-6">
             <x-filament::card>
@@ -38,17 +38,26 @@
                             <x-heroicon-m-check class="w-10 h-10" />
                         </div>
                         <div>
-                            <h4 class="text-lg font-bold text-gray-900 dark:text-white">رقم الواتساب متصل بنجاح بمحرك سمارتورا!</h4>
-                            <p class="text-sm font-mono text-emerald-700 dark:text-emerald-300 mt-1 font-semibold">
+                            <h4 class="text-lg font-bold text-gray-900 dark:text-white">رقم الواتساب متصل بنجاح بمحرك سمارتورا! 🚀</h4>
+                            @if($pushName)
+                                <p class="text-sm font-semibold text-gray-700 dark:text-gray-300 mt-1">
+                                    الاسم المسجل: <span class="text-emerald-700 dark:text-emerald-400 font-bold">{{ $pushName }}</span>
+                                </p>
+                            @endif
+                            <p class="text-base font-mono text-emerald-700 dark:text-emerald-300 mt-1 font-bold">
                                 {{ $whatsappNumber }}
                             </p>
                             <p class="text-xs text-gray-500 mt-1">تاريخ ووقت الربط: {{ $connectedAt ?? now()->format('d/m/Y H:i') }}</p>
                         </div>
 
                         <div class="pt-4 border-t border-emerald-200 dark:border-emerald-800 flex justify-center gap-3">
+                            <button type="button" wire:click="refreshStatus" class="inline-flex items-center gap-1.5 px-3 py-2 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-semibold rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 transition">
+                                <x-heroicon-o-arrow-path class="w-4 h-4 text-emerald-600" />
+                                فحص وتحديث الحالة
+                            </button>
                             <button type="button" wire:click="disconnectWhatsApp" class="inline-flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 dark:bg-red-950/50 text-red-700 dark:text-red-300 text-xs font-semibold rounded-lg border border-red-200 dark:border-red-800 transition">
                                 <x-heroicon-o-arrow-left-on-rectangle class="w-4 h-4" />
-                                فصل جلسة الواتساب الحالية
+                                فصل الجلسة وربط رقم آخر
                             </button>
                         </div>
                     </div>
@@ -63,8 +72,9 @@
                                     <div class="absolute inset-0 border-2 border-emerald-500 rounded-xl pointer-events-none opacity-40 animate-pulse"></div>
                                 </div>
                             @else
-                                <div class="w-56 h-56 mx-auto bg-gray-200 dark:bg-gray-700 rounded-xl flex items-center justify-center text-gray-400">
-                                    جاري تجهيز الرمز...
+                                <div class="w-56 h-56 mx-auto bg-gray-100 dark:bg-gray-700 rounded-xl flex flex-col items-center justify-center text-gray-500 p-4 space-y-2">
+                                    <x-heroicon-o-arrow-path class="w-8 h-8 animate-spin text-emerald-600" />
+                                    <span class="text-xs font-medium">جاري تجهيز رمز QR الفعلي من واتساب...</span>
                                 </div>
                             @endif
 
@@ -73,9 +83,9 @@
                                     <x-heroicon-o-arrow-path class="w-3.5 h-3.5" />
                                     تحديث الرمز
                                 </button>
-                                <button type="button" wire:click="confirmConnection" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow transition">
+                                <button type="button" wire:click="checkConnection" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow transition">
                                     <x-heroicon-m-check class="w-3.5 h-3.5" />
-                                    تم المسح والربط
+                                    تحقق بعد المسح
                                 </button>
                             </div>
                         </div>
@@ -98,7 +108,7 @@
                                 </li>
                                 <li class="flex items-start gap-2">
                                     <span class="w-5 h-5 rounded-full bg-emerald-600 text-white text-[11px] font-bold flex items-center justify-center shrink-0">4</span>
-                                    <span>بمجرد المسح، اضغط زر **"تم المسح والربط"** لتأكيد تنشيط الرد الآلي للرقم فورياً!</span>
+                                    <span>سيتم التحديث تلقائياً وبدء تشغيل الرد الآلي فور إتمام المسح بنجاح!</span>
                                 </li>
                             </ol>
                         </div>
@@ -110,7 +120,7 @@
             <x-filament::card>
                 <h3 class="text-base font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
                     <x-heroicon-o-phone class="w-5 h-5 text-sky-500" />
-                    أرقام الرد الآلي والمسؤول الأولي
+                    أرقام الرد الآلي والمسؤول البشري
                 </h3>
 
                 <div class="space-y-4">
@@ -122,7 +132,7 @@
                             <input 
                                 type="text" 
                                 wire:model="whatsappNumber" 
-                                placeholder="مثال: 967771314738" 
+                                placeholder="مثال: 967730881873" 
                                 class="w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-800 dark:text-white text-sm font-mono focus:ring-emerald-500 focus:border-emerald-500"
                             />
                             <p class="text-[11px] text-gray-500 mt-1">الرقم المستلم للرسائل الذي يقوم الذكاء الاصطناعي بالرد من خلاله.</p>
@@ -130,7 +140,7 @@
 
                         <div>
                             <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
-                                الرقم المسؤول عن الرد الأولي / التحويل البشري
+                                الرقم المسؤول عن التحويل البشري
                             </label>
                             <input 
                                 type="text" 
@@ -143,7 +153,7 @@
                     </div>
 
                     <div class="flex justify-end pt-2">
-                        <button type="button" wire:click="confirmConnection" class="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold shadow transition">
+                        <button type="button" wire:click="saveNumbers" class="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold shadow transition">
                             <x-heroicon-m-check-badge class="w-4 h-4" />
                             حفظ وتحديث الأرقام
                         </button>
@@ -193,7 +203,7 @@
             <x-filament::card>
                 <h3 class="text-base font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
                     <x-heroicon-o-command-line class="w-5 h-5 text-purple-500" />
-                    نقطة ربط الأتمتة (Webhook / n8n)
+                    نقطة ربط الأتمتة (Webhook / WAHA)
                 </h3>
 
                 <div class="space-y-3 text-xs">
@@ -225,7 +235,7 @@
                             كيف تعمل الأتمتة؟
                         </span>
                         <p class="text-[11px] leading-relaxed">
-                            يقوم خادم n8n أو مزود خدمة الواتساب بإرسال رسائل العملاء القادمة للرابط أعلاه متضمنة رقم المرسل والرقم المستلم. يتعرف سمارتورا فورياً على منشأتك، يقرأ من ملفات الأسعار والخدمات، ويرسل الرد المناسب تلقائياً.
+                            يقوم خادم WAHA / n8n بإرسال رسائل العملاء القادمة للرابط أعلاه. يتعرف سمارتورا فورياً على منشأتك، يقرأ من ملفات الأسعار والخدمات، ويرسل الرد المناسب تلقائياً.
                         </p>
                     </div>
                 </div>

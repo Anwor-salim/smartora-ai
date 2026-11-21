@@ -5,6 +5,7 @@ namespace App\Filament\Company\Pages;
 use App\Models\Company;
 use App\Models\SystemNotification;
 use App\Services\AiChatService;
+use App\Services\WahaWhatsAppService;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Support\Str;
@@ -27,22 +28,11 @@ class WhatsAppConnection extends Page
     public ?string $testPhoneNumber = '';
     public ?string $testMessage = 'مرحباً، هذه رسالة تجريبية من نظام سمارتورا للتأكد من اكتمال الربط بنجاح!';
     public ?string $connectedAt = null;
+    public ?string $pushName = null;
 
-    public function mount(): void
+    public function mount(WahaWhatsAppService $waha): void
     {
-        $company = $this->getCompany();
-        if ($company) {
-            $this->whatsappNumber = $company->whatsapp_number;
-            $this->supportPhone = $company->support_phone;
-            $this->connectionStatus = $company->whatsapp_session_status ?? 'disconnected';
-            $this->connectedAt = $company->whatsapp_connected_at?->format('d/m/Y H:i');
-
-            if ($this->connectionStatus === 'connected') {
-                $this->qrCodeUrl = null;
-            } else {
-                $this->generateQr();
-            }
-        }
+        $this->refreshStatus($waha);
     }
 
     public function getCompany(): ?Company
@@ -52,75 +42,142 @@ class WhatsAppConnection extends Page
             return null;
         }
 
-        if ($user->isCompanyAdmin()) {
+        if ($user->isCompanyAdmin() && $user->company) {
             return $user->company;
         }
 
-        return $user->company ?? Company::first();
+        return $user->company ?? Company::latest()->first();
+    }
+
+    public function refreshStatus(?WahaWhatsAppService $waha = null): void
+    {
+        $waha = $waha ?? app(WahaWhatsAppService::class);
+        $company = $this->getCompany();
+        if (! $company) {
+            return;
+        }
+
+        $this->supportPhone = $company->support_phone;
+
+        // Check live session with WAHA engine
+        if ($waha->isWorking()) {
+            $connectedPhone = $waha->getConnectedPhone() ?? $company->whatsapp_number;
+            $this->pushName = $waha->getPushName();
+            $this->whatsappNumber = $connectedPhone;
+            $this->connectionStatus = 'connected';
+            $this->connectedAt = $company->whatsapp_connected_at?->format('d/m/Y H:i') ?? now()->format('d/m/Y H:i');
+            $this->qrCodeUrl = null;
+
+            // Sync with company model if needed
+            if ($company->whatsapp_session_status !== 'connected' || $company->whatsapp_number !== $connectedPhone) {
+                $company->update([
+                    'whatsapp_session_status' => 'connected',
+                    'whatsapp_number' => $connectedPhone,
+                    'whatsapp_connected_at' => $company->whatsapp_connected_at ?? now(),
+                ]);
+            }
+        } else {
+            $this->connectionStatus = 'disconnected';
+            $this->whatsappNumber = $company->whatsapp_number;
+            $this->connectedAt = null;
+            $this->pushName = null;
+
+            if ($company->whatsapp_session_status !== 'disconnected') {
+                $company->update(['whatsapp_session_status' => 'disconnected']);
+            }
+
+            // Fetch real QR code
+            $this->loadQr($waha);
+        }
+    }
+
+    public function loadQr(?WahaWhatsAppService $waha = null): void
+    {
+        $waha = $waha ?? app(WahaWhatsAppService::class);
+        $qr = $waha->getQrCode();
+
+        if ($qr) {
+            $this->qrCodeUrl = $qr;
+            $this->connectionStatus = 'scanning';
+        } else {
+            $this->qrCodeUrl = null;
+        }
     }
 
     public function generateQr(): void
     {
-        $company = $this->getCompany();
-        $codeData = 'SMARTORA-WA-' . ($company?->slug ?? 'demo') . '-' . Str::random(16);
-        // High quality QR code via public chart generator
-        $this->qrCodeUrl = "https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=" . urlencode($codeData);
-        $this->connectionStatus = 'scanning';
-    }
-
-    public function confirmConnection(): void
-    {
-        $company = $this->getCompany();
-        if (! $company) return;
-
-        $number = trim($this->whatsappNumber);
-        if (empty($number)) {
-            Notification::make()->title('يرجى كتابة رقم الواتساب قبل إتمام الربط')->warning()->send();
-            return;
-        }
-
-        $company->update([
-            'whatsapp_number' => $number,
-            'support_phone' => $this->supportPhone,
-            'whatsapp_session_status' => 'connected',
-            'whatsapp_connected_at' => now(),
-        ]);
-
-        $this->connectionStatus = 'connected';
-        $this->connectedAt = now()->format('d/m/Y H:i');
-        $this->qrCodeUrl = null;
-
-        SystemNotification::create([
-            'company_id' => $company->id,
-            'title' => 'تم ربط رقم الواتساب بنجاح',
-            'message' => "تم ربط الرقم ({$number}) بنجاح. البوت جاهز لاستقبال رسائل الزبائن والرد التلقائي.",
-            'type' => 'success',
-        ]);
+        $waha = app(WahaWhatsAppService::class);
+        $waha->restartSession();
+        sleep(1);
+        $this->loadQr($waha);
 
         Notification::make()
-            ->title('تم مسح الباركود وربط الواتساب بنجاح! 🚀')
-            ->body('الرقم ' . $number . ' متصل الآن ومربوط مع محرك الأتمتة.')
-            ->success()
+            ->title('تم تحديث وتوليد رمز QR جديد')
+            ->info()
             ->send();
+    }
+
+    public function checkConnection(): void
+    {
+        $waha = app(WahaWhatsAppService::class);
+        $this->refreshStatus($waha);
+
+        if ($this->connectionStatus === 'connected') {
+            Notification::make()
+                ->title('الواتساب متصل بنجاح! 🚀')
+                ->body('الرقم ' . $this->whatsappNumber . ' متصل ويعمل حالياً.')
+                ->success()
+                ->send();
+        } else {
+            Notification::make()
+                ->title('لم يكتمل مسح الباركود بعد')
+                ->body('يرجى توجيه كاميرا تطبيق واتساب من هاتفك لمسح الرمز الظاهر.')
+                ->warning()
+                ->send();
+        }
     }
 
     public function disconnectWhatsApp(): void
     {
         $company = $this->getCompany();
-        if (! $company) return;
+        $waha = app(WahaWhatsAppService::class);
+        $waha->logoutSession();
 
-        $company->update([
-            'whatsapp_session_status' => 'disconnected',
-            'whatsapp_connected_at' => null,
-        ]);
+        if ($company) {
+            $company->update([
+                'whatsapp_session_status' => 'disconnected',
+                'whatsapp_connected_at' => null,
+            ]);
+        }
 
         $this->connectionStatus = 'disconnected';
         $this->connectedAt = null;
-        $this->generateQr();
+        $this->pushName = null;
+
+        sleep(1);
+        $this->loadQr($waha);
 
         Notification::make()
-            ->title('تم فصل جلسة الواتساب مؤقتاً')
+            ->title('تم تسجيل الخروج وفصل الجلسة')
+            ->body('يمكنك الآن مسح الرمز الجديد برقم آخر.')
             ->warning()
+            ->send();
+    }
+
+    public function saveNumbers(): void
+    {
+        $company = $this->getCompany();
+        if (! $company) return;
+
+        $number = trim($this->whatsappNumber);
+        $company->update([
+            'whatsapp_number' => $number,
+            'support_phone' => trim($this->supportPhone),
+        ]);
+
+        Notification::make()
+            ->title('تم حفظ وتحديث الأرقام بنجاح')
+            ->success()
             ->send();
     }
 
@@ -135,10 +192,15 @@ class WhatsAppConnection extends Page
             return;
         }
 
-        // Simulate sending and trigger AI response check
         try {
             $aiService = app(AiChatService::class);
             $res = $aiService->handleCustomerMessage($company, $target, $this->testMessage);
+
+            // Also try sending real message via WAHA if working
+            $waha = app(WahaWhatsAppService::class);
+            if ($waha->isWorking() && !empty($res['reply'])) {
+                $waha->sendText($target, $res['reply']);
+            }
 
             Notification::make()
                 ->title('تم إرسال الرسالة ومعالجتها بالأتمتة بنجاح!')

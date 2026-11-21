@@ -17,7 +17,7 @@ class CreateKnowledgeDocument extends CreateRecord
     protected function handleRecordCreation(array $data): Model
     {
         $user = auth()->user();
-        $companyId = $user?->company_id ?? \App\Models\Company::latest()->first()?->id;
+        $companyId = $data['company_id'] ?? $user?->company_id ?? \App\Models\Company::latest()->first()?->id;
 
         if (! $companyId) {
             Notification::make()->title('يجب إضافة شركة أولاً قبل رفع المستندات')->danger()->send();

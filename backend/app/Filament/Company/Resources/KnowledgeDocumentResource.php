@@ -39,6 +39,13 @@ class KnowledgeDocumentResource extends Resource
         return $form
             ->schema([
                 Forms\Components\Card::make()->schema([
+                    Forms\Components\Select::make('company_id')
+                        ->label('الشركة التابع لها المستند')
+                        ->relationship('company', 'name')
+                        ->default(fn () => auth()->user()?->company_id ?? \App\Models\Company::first()?->id)
+                        ->required()
+                        ->visible(fn () => auth()->user()?->isSuperAdmin() || ! auth()->user()?->company_id),
+
                     Forms\Components\TextInput::make('title')
                         ->label('عنوان / وصف الملف')
                         ->placeholder('مثال: قائمة أسعار قطع غيار تويوتا 2026')
@@ -52,10 +59,15 @@ class KnowledgeDocumentResource extends Resource
                         ->acceptedFileTypes([
                             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                             'application/vnd.ms-excel',
+                            'application/excel',
+                            'application/x-excel',
+                            'application/x-msexcel',
                             'text/csv',
                             'text/plain',
                             'application/pdf',
+                            'application/octet-stream',
                         ])
+                        ->maxSize(51200)
                         ->helperText('يدعم صيغ .xlsx و .csv و .pdf. سيقوم النظام فورياً باستخراج الأصناف والأسعار والجداول.')
                         ->required()
                         ->columnSpanFull(),

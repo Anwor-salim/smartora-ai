@@ -37,13 +37,20 @@ class SetGeminiKeyCommand extends Command
             $this->warn("Could not list models: " . $listRes->body());
         }
 
-        // Try candidate models
-        $models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro-latest'];
+        // Candidate models with exact names from ListModels
+        $candidateModels = [
+            'models/gemini-2.5-flash',
+            'models/gemini-flash-latest',
+            'models/gemini-2.5-flash-lite',
+            'models/gemini-3.5-flash',
+            'models/gemini-3.8-flash',
+            'models/gemini-pro-latest'
+        ];
         $workingModel = null;
 
-        foreach ($models as $model) {
+        foreach ($candidateModels as $model) {
             try {
-                $response = Http::timeout(15)->post("https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$key}", [
+                $response = Http::timeout(15)->post("https://generativelanguage.googleapis.com/v1beta/{$model}:generateContent?key={$key}", [
                     'contents' => [
                         [
                             'role' => 'user',
@@ -62,6 +69,8 @@ class SetGeminiKeyCommand extends Command
                     $this->info("SUCCESS! Response from {$model}: " . trim($text));
                     $workingModel = $model;
                     break;
+                } else {
+                    $this->warn("Model {$model} returned: " . substr($response->body(), 0, 150));
                 }
             } catch (\Exception $e) {
                 $this->error("Exception on {$model}: " . $e->getMessage());

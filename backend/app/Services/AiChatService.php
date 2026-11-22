@@ -216,6 +216,12 @@ class AiChatService
             return $greeting . " كيف يمكننا مساعدتك اليوم؟ تفضل بطلبك وسأجيبك فوراً عن السيارات المتاحة وأسعارها.";
         }
 
+        // 1.5. Specific Budget / Money Question ("معي انا 40 الف فقط هل ممكن احصل علا سياره", "ميزانيتي 150 الف", "عندي 50 الف")
+        $budgetMatch = $this->extractBudgetFromMessage($normMsg);
+        if ($budgetMatch !== null) {
+            return $this->handleBudgetInquiry($budgetMatch, $documents, $company);
+        }
+
         // 2. Offroad / Desert / 4x4 / SUVs (جيوب / بر / صالون / تطعيس / دفع رباعي)
         if (preg_match('/(جيب|جيوب|بر|صحراء|تطعيس|اوف رود|أوف رود|دفع رباعي|فور ويل|4x4|صالون|مرتفع|مرتفعه|سيارات بر|موتر بر)/u', $normMsg) ||
             ($isEnglish && preg_match('/\b(offroad|4x4|suv|desert|4wd)\b/i', $rawMsg))) {
@@ -678,11 +684,17 @@ class AiChatService
     }
 
     /**
-     * Arabic text normalizer (unifies alef forms, taa marboota, removes diacritics).
+     * Arabic text normalizer (unifies alef forms, taa marboota, removes diacritics, converts numerals).
      */
     protected function normalizeArabic(string $text): string
     {
         $text = mb_strtolower($text);
+
+        // Convert Eastern Arabic-Indic numerals (٠-٩) to standard (0-9)
+        $easternNumerals = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+        $westernNumerals = ['0','1','2','3','4','5','6','7','8','9'];
+        $text = str_replace($easternNumerals, $westernNumerals, $text);
+
         // Replace alef variants (أ, إ, آ -> ا)
         $text = preg_replace('/[إأآا]/u', 'ا', $text);
         // Replace taa marboota (ة -> ه)
@@ -697,5 +709,80 @@ class AiChatService
         $text = preg_replace('/\s+/u', ' ', $text);
 
         return trim($text);
+    }
+
+    /**
+     * Extract mentioned budget/amount from customer inquiry.
+     */
+    protected function extractBudgetFromMessage(string $normMsg): ?float
+    {
+        // 1. Matches patterns like: "40 الف", "40الف", "150 الف", "150k"
+        if (preg_match('/([0-9]{1,4})\s*(?:الف|ألف|k)/u', $normMsg, $m)) {
+            $val = (float)$m[1] * 1000;
+            if ($val > 1000) return $val;
+        }
+
+        // 2. Matches full numbers like: "40000", "120000"
+        if (preg_match('/(?:معي|عندي|ميزانيتي|ميزانية|بحدود|حوالي|قدرتي|فلوسي|بمبلغ|ب|احصل)\s*([0-9]{4,7})/u', $normMsg, $m)) {
+            $val = (float)$m[1];
+            if ($val >= 5000) return $val;
+        }
+
+        return null;
+    }
+
+    /**
+     * Handle budget-specific inquiries directly and persuasively.
+     */
+    protected function handleBudgetInquiry(float $budget, $documents, Company $company): string
+    {
+        $contactNum = $company->phone ?: $company->whatsapp_number;
+        $location = $company->address ?: 'المعرض الرئيسي';
+        $sortedCars = $this->getAllCarsSortedByPrice($documents, 'asc');
+
+        if (empty($sortedCars)) {
+            return "أهلاً بك في شركة **{$company->name}**! يسعدنا خدمتك.\nبخصوص الميزانية، نرجو التواصل مباشرة مع مسؤول المبيعات لترشيح أفضل الخيارات المتاحة: {$contactNum}";
+        }
+
+        $cheapestCar = $sortedCars[0];
+        $minPrice = $cheapestCar['_num_price'] ?? 118000;
+        $formattedBudget = number_format($budget);
+
+        // Scenario A: Budget is lower than cheapest cash car (e.g. 40,000 SAR)
+        if ($budget < $minPrice) {
+            $cheapestTitle = trim(($cheapestCar['الشركة المصنعة'] ?? '') . ' ' . ($cheapestCar['الطراز'] ?? '') . ' ' . ($cheapestCar['سنة الصنع'] ?? '2025'));
+            $cheapestPriceStr = number_format($minPrice);
+
+            return "أهلاً بك في شركة **{$company->name}**! يسعدنا خدمتك والرد على استفسارك بدقة. 🤝\n\n" .
+                "بخصوص ميزانيتك الحالية (**{$formattedBudget} ريال**):\n" .
+                "• جميع سياراتنا المعروضة في الصالة حالياً هي سيارات جديدة كلياً (موديل 2025 مضمونة وبطاقة جمركية)، وأقل سيارة سعراً لدينا كاش هي:\n" .
+                "  🚗 **{$cheapestTitle}** بسعر **{$cheapestPriceStr} ريال سعودي**.\n\n" .
+                "💡 **الحل الأفضل والمتاح لطلبك:**\n" .
+                "يمكنك الاستفادة من مبلغ الـ (**{$formattedBudget} ريال**) كـ **(دفعة أولى ممتازة)** لشراء السيارة بنظام **الأقساط والتمويل الميسر**، واستلام سيارتك الجديدة فوراً وتقسيط المتبقي على دفعات شهرية مريحة جداً تناسب دخلك!\n\n" .
+                "📍 لمراجعة الحسبة والأقساط، يشرفنا زيارتك لمعرضنا في: {$location}\n" .
+                "📞 أو التواصل المباشر مع مسؤول المبيعات والتمويل: {$contactNum}";
+        }
+
+        // Scenario B: Budget matches one or more cash cars (e.g. 150,000 or 300,000 SAR)
+        $matchingCars = [];
+        foreach ($sortedCars as $car) {
+            if ($car['_num_price'] <= $budget * 1.15) {
+                $matchingCars[] = $car;
+            }
+        }
+
+        $lines = [
+            "أهلاً بك في شركة **{$company->name}**! يسعدنا خدمتك.",
+            "بخصوص ميزانيتك المحددة (**{$formattedBudget} ريال**)، إليك أنسب السيارات المتاحة لدينا في المعرض القريبة من ميزانيتك:\n"
+        ];
+
+        $i = 1;
+        foreach (array_slice($matchingCars, 0, 4) as $car) {
+            $lines[] = $this->formatSingleCarRow($car, $i++);
+        }
+
+        $lines[] = "\n💡 جميع السيارات جديدة ومضمونة ببطاقة جمركية.\n📍 المعرض: {$location}\n📞 للحجز والاستفسار المباشر: {$contactNum}";
+
+        return implode("\n", $lines);
     }
 }

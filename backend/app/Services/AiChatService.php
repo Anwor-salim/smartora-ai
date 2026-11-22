@@ -360,8 +360,24 @@ class AiChatService
                 $score = 0;
 
                 foreach ($filteredWords as $w) {
-                    if (mb_strlen($w) >= 2 && mb_strpos($rowText, $w) !== false) {
-                        $score += 1;
+                    $w = trim($w);
+                    if (mb_strlen($w) < 2) continue;
+
+                    // Direct match
+                    if (mb_strpos($rowText, $w) !== false) {
+                        $score += 2;
+                    }
+                    // Strip leading "ال" or "الل" (Arabic definite article)
+                    elseif (mb_strlen($w) > 3 && mb_substr($w, 0, 2) === 'ال') {
+                        $sub = mb_substr($w, 2);
+                        if (mb_strpos($rowText, $sub) !== false) {
+                            $score += 2;
+                        } elseif (mb_strlen($sub) > 3 && mb_substr($sub, 0, 2) === 'ال') {
+                            $sub2 = mb_substr($sub, 2);
+                            if (mb_strpos($rowText, $sub2) !== false) {
+                                $score += 2;
+                            }
+                        }
                     }
                 }
 

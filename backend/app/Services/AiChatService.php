@@ -155,14 +155,26 @@ class AiChatService
                         ],
                         'generationConfig' => [
                             'temperature' => 0.4,
-                            'maxOutputTokens' => 650,
-                            'topP' => 0.85,
+                            'maxOutputTokens' => 800,
+                            'thinkingConfig' => [
+                                'thinkingBudget' => 0
+                            ]
                         ]
                     ]);
 
                 if ($response->successful()) {
                     $json = $response->json();
-                    $aiText = $json['candidates'][0]['content']['parts'][0]['text'] ?? null;
+                    $parts = $json['candidates'][0]['content']['parts'] ?? [];
+                    $aiText = '';
+                    foreach ($parts as $p) {
+                        if (empty($p['thought']) && !empty($p['text'])) {
+                            $aiText .= $p['text'];
+                        }
+                    }
+                    if (empty($aiText) && !empty($parts)) {
+                        $lastPart = end($parts);
+                        $aiText = $lastPart['text'] ?? '';
+                    }
                     if (!empty($aiText)) {
                         return trim($aiText);
                     }

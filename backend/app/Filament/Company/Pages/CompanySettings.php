@@ -41,6 +41,7 @@ class CompanySettings extends Page implements HasForms
                 'working_hours' => $company->working_hours,
                 'greeting_message' => $company->settings['greeting_message'] ?? '',
                 'custom_system_prompt' => $company->custom_system_prompt,
+                'gemini_api_key' => $company->settings['gemini_api_key'] ?? '',
             ]);
         }
     }
@@ -146,6 +147,14 @@ class CompanySettings extends Page implements HasForms
                                     ->helperText('تعليمات خاصة توجه أسلوب البوت ولهجته وطريقة تفاعله مع العملاء')
                                     ->rows(4)
                                     ->columnSpanFull(),
+
+                                Forms\Components\TextInput::make('gemini_api_key')
+                                    ->label('مفتاح Google Gemini API Key (لتفعيل ذكاء Gemini التوليدي)')
+                                    ->password()
+                                    ->revealable()
+                                    ->placeholder('AIzaSy...')
+                                    ->helperText('مفتاح الربط من Google AI Studio، عند إدخاله سيتولى نموذج Gemini 1.5 Flash صياغة كافة الردود بالذكاء التوليدي.')
+                                    ->columnSpanFull(),
                             ]),
                     ])
                     ->columnSpanFull(),
@@ -165,6 +174,7 @@ class CompanySettings extends Page implements HasForms
 
         $settings = $company->settings ?? [];
         $settings['greeting_message'] = $formState['greeting_message'] ?? '';
+        $settings['gemini_api_key'] = trim($formState['gemini_api_key'] ?? '');
 
         $company->update([
             'name' => $formState['name'],

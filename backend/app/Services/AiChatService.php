@@ -375,6 +375,10 @@ class AiChatService
         foreach ($documents as $doc) {
             if (empty($doc->extracted_data) || !is_array($doc->extracted_data)) continue;
             foreach ($doc->extracted_data as $car) {
+                $brand = $car['الشركة المصنعة'] ?? $car['الشركة'] ?? '';
+                $model = $car['الطراز'] ?? $car['الموديل'] ?? '';
+                if (empty(trim($brand)) && empty(trim($model))) continue;
+
                 $text = $this->normalizeArabic(implode(' ', array_values($car)));
                 foreach ($keywords as $kw) {
                     $normKw = $this->normalizeArabic($kw);
@@ -397,8 +401,13 @@ class AiChatService
         foreach ($documents as $doc) {
             if (empty($doc->extracted_data) || !is_array($doc->extracted_data)) continue;
             foreach ($doc->extracted_data as $car) {
+                $brand = $car['الشركة المصنعة'] ?? $car['الشركة'] ?? '';
+                $model = $car['الطراز'] ?? $car['الموديل'] ?? '';
+                if (empty(trim($brand)) && empty(trim($model))) continue;
+
                 $rawPrice = $car['السعر (ريال سعودي)'] ?? $car['السعر'] ?? '0';
                 $numPrice = (float)preg_replace('/[^0-9]/', '', (string)$rawPrice);
+                if ($numPrice <= 0) continue; // Skip zero/empty price rows
                 $car['_num_price'] = $numPrice;
                 $cars[] = $car;
             }

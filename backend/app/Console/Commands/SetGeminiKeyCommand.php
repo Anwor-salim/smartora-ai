@@ -25,55 +25,40 @@ class SetGeminiKeyCommand extends Command
 
         $this->info("Fetching available models from Google API...");
         $listRes = Http::timeout(15)->get("https://generativelanguage.googleapis.com/v1beta/models?key={$key}");
+        $workingModel = null;
+
         if ($listRes->successful()) {
             $allModels = $listRes->json('models') ?? [];
             $this->info("Found " . count($allModels) . " total models for this API key.");
+            
             foreach ($allModels as $m) {
-                if (in_array('generateContent', $m['supportedGenerationMethods'] ?? [])) {
-                    $this->line(" - " . $m['name']);
-                }
-            }
-        } else {
-            $this->warn("Could not list models: " . $listRes->body());
-        }
+                if (!in_array('generateContent', $m['supportedGenerationMethods'] ?? [])) continue;
+                $modelName = $m['name']; // e.g. models/gemini-3.5-flash
 
-        // Candidate models with exact names from ListModels
-        $candidateModels = [
-            'models/gemini-2.5-flash',
-            'models/gemini-flash-latest',
-            'models/gemini-2.5-flash-lite',
-            'models/gemini-3.5-flash',
-            'models/gemini-3.8-flash',
-            'models/gemini-pro-latest'
-        ];
-        $workingModel = null;
-
-        foreach ($candidateModels as $model) {
-            try {
-                $response = Http::timeout(15)->post("https://generativelanguage.googleapis.com/v1beta/{$model}:generateContent?key={$key}", [
-                    'contents' => [
-                        [
-                            'role' => 'user',
-                            'parts' => [
-                                ['text' => 'أجب بكلمة واحدة فقط: ممتاز']
+                try {
+                    $response = Http::timeout(6)->post("https://generativelanguage.googleapis.com/v1beta/{$modelName}:generateContent?key={$key}", [
+                        'contents' => [
+                            [
+                                'role' => 'user',
+                                'parts' => [
+                                    ['text' => 'مرحبا']
+                                ]
                             ]
                         ]
-                    ]
-                ]);
+                    ]);
 
-                $this->info("Model [{$model}] Status: " . $response->status());
+                    $status = $response->status();
+                    $bodySnippet = substr($response->body(), 0, 70);
+                    $this->line("{$modelName} => {$status} ({$bodySnippet})");
 
-                if ($response->successful()) {
-                    $json = $response->json();
-                    $text = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
-                    $this->info("SUCCESS! Response from {$model}: " . trim($text));
-                    $workingModel = $model;
-                    break;
-                } else {
-                    $this->warn("Model {$model} returned: " . substr($response->body(), 0, 150));
+                    if ($response->successful()) {
+                        $this->info(">>> FOUND WORKING MODEL: {$modelName} <<<");
+                        $workingModel = $modelName;
+                        break;
+                    }
+                } catch (\Exception $e) {
+                    $this->warn("{$modelName} => Exception: " . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                $this->error("Exception on {$model}: " . $e->getMessage());
             }
         }
 

@@ -138,27 +138,44 @@ class AiChatService
 
         // Try Gemini API if key is present
         if ($geminiKey) {
-            try {
-                $response = Http::timeout(10)->post("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={$geminiKey}", [
-                    'contents' => [
-                        [
-                            'role' => 'user',
-                            'parts' => [
-                                ['text' => $systemPrompt . "\n\nCustomer Inquiry / سؤال العميل:\n" . $userMessage]
+            $configuredModel = $company->settings['gemini_model'] ?? 'models/gemini-3.5-flash';
+            if (!str_starts_with($configuredModel, 'models/')) {
+                $configuredModel = 'models/' . $configuredModel;
+            }
+
+            $candidateModels = array_values(array_unique([
+                $configuredModel,
+                'models/gemini-3.5-flash',
+                'models/gemini-3.8-flash',
+                'models/gemini-flash-latest',
+                'models/gemini-pro-latest',
+            ]));
+
+            foreach ($candidateModels as $modelToCall) {
+                try {
+                    $response = Http::timeout(15)->post("https://generativelanguage.googleapis.com/v1beta/{$modelToCall}:generateContent?key={$geminiKey}", [
+                        'contents' => [
+                            [
+                                'role' => 'user',
+                                'parts' => [
+                                    ['text' => $systemPrompt . "\n\nCustomer Inquiry / سؤال العميل:\n" . $userMessage]
+                                ]
                             ]
                         ]
-                    ]
-                ]);
+                    ]);
 
-                if ($response->successful()) {
-                    $json = $response->json();
-                    $aiText = $json['candidates'][0]['content']['parts'][0]['text'] ?? null;
-                    if ($aiText) {
-                        return trim($aiText);
+                    if ($response->successful()) {
+                        $json = $response->json();
+                        $aiText = $json['candidates'][0]['content']['parts'][0]['text'] ?? null;
+                        if ($aiText) {
+                            return trim($aiText);
+                        }
+                    } else {
+                        Log::warning("Gemini model {$modelToCall} returned status: " . $response->status());
                     }
+                } catch (\Exception $e) {
+                    Log::warning("Gemini API call failed for {$modelToCall}: " . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                Log::warning("Gemini API call failed: " . $e->getMessage());
             }
         }
 

@@ -32,6 +32,16 @@ class CheckCompanyWhatsAppCommand extends Command
         $this->line("حالة ربط الواتساب في النظام: {$company->whatsapp_session_status}");
         $this->line("تاريخ ووقت الربط: " . ($company->whatsapp_connected_at ? $company->whatsapp_connected_at->toDateTimeString() : 'لم يربط بعد'));
 
+        $this->info("\n=== ملفات المعرفة والمستندات (Documents) ===");
+        $docs = $company->documents()->get();
+        $this->line("عدد الملفات المرتبطة: " . $docs->count());
+        foreach ($docs as $d) {
+            $this->line("- [#{$d->id}] {$d->title} ({$d->file_type}) | الحالة: {$d->status} | الأصناف: {$d->total_items} | طول النص: " . mb_strlen($d->extracted_text ?? ''));
+            if (!empty($d->extracted_text)) {
+                $this->line("  مقتطف من المحتوى: " . mb_substr($d->extracted_text, 0, 150) . "...");
+            }
+        }
+
         // Check WAHA session via WahaWhatsAppService
         $this->info("\n=== فحص جلسات WAHA WhatsApp ===");
         $session = $waha->getSession();

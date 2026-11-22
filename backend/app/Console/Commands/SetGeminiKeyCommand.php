@@ -23,10 +23,22 @@ class SetGeminiKeyCommand extends Command
             return 1;
         }
 
-        $this->info("Testing Gemini Key with Google API...");
+        $this->info("Fetching available models from Google API...");
+        $listRes = Http::timeout(15)->get("https://generativelanguage.googleapis.com/v1beta/models?key={$key}");
+        if ($listRes->successful()) {
+            $allModels = $listRes->json('models') ?? [];
+            $this->info("Found " . count($allModels) . " total models for this API key.");
+            foreach ($allModels as $m) {
+                if (in_array('generateContent', $m['supportedGenerationMethods'] ?? [])) {
+                    $this->line(" - " . $m['name']);
+                }
+            }
+        } else {
+            $this->warn("Could not list models: " . $listRes->body());
+        }
 
-        // Try gemini-1.5-flash first, then gemini-2.0-flash
-        $models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-pro'];
+        // Try candidate models
+        $models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro-latest'];
         $workingModel = null;
 
         foreach ($models as $model) {
@@ -47,11 +59,9 @@ class SetGeminiKeyCommand extends Command
                 if ($response->successful()) {
                     $json = $response->json();
                     $text = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
-                    $this->info("Response from {$model}: " . trim($text));
+                    $this->info("SUCCESS! Response from {$model}: " . trim($text));
                     $workingModel = $model;
                     break;
-                } else {
-                    $this->warn("Model {$model} returned error: " . $response->body());
                 }
             } catch (\Exception $e) {
                 $this->error("Exception on {$model}: " . $e->getMessage());

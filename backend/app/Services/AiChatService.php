@@ -471,6 +471,10 @@ class AiChatService
         }
         $searchTerms = array_unique(array_filter($searchTerms));
 
+        // Skip generic stop words
+        $stopWords = ['سياره', 'سيارة', 'سيارات', 'نريد', 'اريد', 'ابغى', 'عندكم', 'موجود', 'متوفر', 'كم', 'سعر', 'اسعار', 'في', 'من', 'ما', 'هي', 'شو', 'ايش', 'وش'];
+        $filteredTerms = array_values(array_diff($searchTerms, $stopWords));
+
         // Expand with common Arabic dialect synonyms
         $synonymsMap = [
             'مرسدس' => ['مرسيدس', 's500'],

@@ -61,7 +61,7 @@ class AiChatService
             'message' => $incomingMessage,
         ]);
 
-        // 3. Assemble Knowledge Context
+        // 3. Assemble Dynamic Knowledge Context
         $knowledgeContext = $this->buildKnowledgeContext($company);
 
         // 4. Generate AI Response
@@ -92,27 +92,27 @@ class AiChatService
     }
 
     /**
-     * Build knowledge base context from company info and uploaded documents.
+     * Build knowledge base context dynamically from company profile and uploaded documents.
      */
     protected function buildKnowledgeContext(Company $company): string
     {
         $contextParts = [];
 
-        $contextParts[] = "معلومات الشركة:";
-        $contextParts[] = "- اسم الشركة: " . $company->name;
+        $contextParts[] = "معلومات وبيانات المنشأة:";
+        $contextParts[] = "- اسم المنشأة: " . $company->name;
         if ($company->about_us) $contextParts[] = "- نبذة عن المنشأة ونشاطها: " . $company->about_us;
         if ($company->services_offered) $contextParts[] = "- الخدمات والمنتجات التي تقدمها: " . $company->services_offered;
         if ($company->phone) $contextParts[] = "- رقم التواصل: " . $company->phone;
         if ($company->whatsapp_number) $contextParts[] = "- رقم الواتساب المربوط: " . $company->whatsapp_number;
-        if ($company->support_phone) $contextParts[] = "- رقم مسؤول الرد الأولي / التحويل للدعم البشري: " . $company->support_phone;
+        if ($company->support_phone) $contextParts[] = "- رقم مسؤول المبيعات المباشر / التحويل للدعم البشري: " . $company->support_phone;
         if ($company->address) $contextParts[] = "- الموقع / العنوان: " . $company->address;
         if ($company->google_maps_url) $contextParts[] = "- رابط الموقع على الخريطة: " . $company->google_maps_url;
         if ($company->working_hours) $contextParts[] = "- أوقات وساعات الدوام: " . $company->working_hours;
 
-        // Retrieve uploaded Excel / PDF documents
+        // Retrieve uploaded Excel / PDF / Word documents for this company
         $documents = $company->documents()->where('status', 'ready')->get();
         if ($documents->count() > 0) {
-            $contextParts[] = "\n--- البيانات وقوائم الأسعار والخدمات المرفقة من ملفات الشركة ---";
+            $contextParts[] = "\n--- قوائم الأسعار والبيانات والخدمات المرفقة من ملفات المنشأة ---";
             foreach ($documents as $doc) {
                 $contextParts[] = "### مستند ({$doc->title}) [نوع: {$doc->file_type}]:";
                 $contextParts[] = $doc->extracted_text;
@@ -123,23 +123,25 @@ class AiChatService
     }
 
     /**
-     * Generate AI answer using Gemini / OpenAI or smart local semantic match.
+     * Generate AI answer using Gemini / OpenAI or dynamic data-driven fallback.
      */
     protected function generateResponse(Company $company, string $userMessage, string $knowledgeContext, Conversation $conversation): string
     {
         $geminiKey = env('GEMINI_API_KEY') ?: ($company->settings['gemini_api_key'] ?? null);
+        $openaiKey = env('OPENAI_API_KEY') ?: ($company->settings['openai_api_key'] ?? null);
 
-        $systemPrompt = $company->custom_system_prompt ?: "أنت المساعد الذكي والممثل الرسمي لخدمة عملاء شركة ({$company->name}) عبر الواتساب.";
-        $systemPrompt .= "\n\n[تعليمات هامة جداً للرد الذكي والسريع]:";
-        $systemPrompt .= "\n1. افهم مقصد العميل فوراً مهما كانت لهجته المحلية (يمنية، خليجية، عامية) ومهما كانت صياغته مختصرة أو فيها أخطاء إملائية (مثل: موتر، جيب، صالون، كم يسوى، ابي اقساط، عطني سيارة بر، وش ارخص شي، بدل).";
-        $systemPrompt .= "\n2. ابحث دائماً في بيانات ومستندات الشركة المرفقة عن أقرب جواب يخدم طلب العميل:";
-        $systemPrompt .= "\n   - إذا سأل عن فئة معينة (بر، جيوب، عائلي، فخم، رخيص/اقتصادي، كهربائي، رياضي) أو ميزانية محددة، اعرض له السيارات الأقرب لطلبه فوراً مع أسعارها ومواصفاتها.";
-        $systemPrompt .= "\n   - إذا سأل عن موديل غير موجود بذاته (مثل كامري)، أخبره بلطف باقتراب خيارات بديلة متوفرة في المعرض (مثل السوناتا أو اللكزس).";
-        $systemPrompt .= "\n   - إذا سأل عن الأقساط أو البدل أو الفحص أو الضمان، وضّح له الإجابة بلباقة وأعطه أرقام التواصل وموقع المعرض.";
-        $systemPrompt .= "\n3. ابدأ بترحيب لبق باسم المنشأة، واختم ببيانات التواصل وموقع المعرض، واجعل الرد مختصراً ومرتباً بنقاط واضحة للقراءة السريعة على شاشة الواتساب.";
-        $systemPrompt .= "\n\n[بيانات الشركة والملفات المرفقة / Company Data & Knowledge]:\n" . $knowledgeContext;
+        // Universal Domain-Agnostic System Prompt
+        $systemPrompt = $company->custom_system_prompt ?: "أنت المساعد الذكي والممثل الرسمي لخدمة عملاء منشأة ({$company->name}) عبر الواتساب.";
+        $systemPrompt .= "\n\n[إرشادات وقواعد الرد المعتمد]:";
+        $systemPrompt .= "\n1. استند في إجابتك حصراً ودقة إلى بيانات ومعلومات ومستندات المنشأة المرفقة أدناه.";
+        $systemPrompt .= "\n2. افهم مقصد العميل بدقة مهما كانت لهجته المحلية أو أسلوبه أو أخطاؤه الإملائية أو صياغته المختصرة.";
+        $systemPrompt .= "\n3. إذا سأل العميل عن أسعار أو خدمات أو أصناف أو مواصفات أو عروض، استخرج له أدق وأقرب إجابة متوفرة في البيانات المرفقة.";
+        $systemPrompt .= "\n4. إذا سأل عن ميزانية أو صنف غير متوفر بذاته، وضّح له بلطف الخيارات والبدائل الأقرب المتاحة في البيانات، واقترح عليه الحلول المناسبة، أو وجهه للتواصل مع الإدارة.";
+        $systemPrompt .= "\n5. ابدأ بترحيب مهني لبق باسم المنشأة ({$company->name})، واختم ببيانات التواصل وموقع المنشأة.";
+        $systemPrompt .= "\n6. اجعل الرد منسقاً، مرتباً بنقاط واضحة، وسريع القراءة على شاشة محادثة الواتساب.";
+        $systemPrompt .= "\n\n[بيانات ومستندات المنشأة المعتمدة / Company Knowledge Base]:\n" . $knowledgeContext;
 
-        // Try Gemini 3.5 Flash with tight timeout for instant WhatsApp response
+        // 1. Try Google Gemini API
         if ($geminiKey) {
             try {
                 $response = Http::timeout(4.5)
@@ -179,21 +181,48 @@ class AiChatService
                         return trim($aiText);
                     }
                 } else {
-                    Log::warning("Gemini returned status " . $response->status() . " - switching to closest-match engine");
+                    Log::warning("Gemini returned status " . $response->status() . " - switching to dynamic database RAG engine");
                 }
             } catch (\Exception $e) {
-                Log::warning("Gemini timeout/error: " . $e->getMessage() . " - switching to closest-match engine");
+                Log::warning("Gemini timeout/error: " . $e->getMessage() . " - switching to dynamic database RAG engine");
             }
         }
 
-        // Ultra-Fast Closest-Match Semantic Engine
-        return $this->smartContextualFallback($company, $userMessage, $knowledgeContext);
+        // 2. Try OpenAI API if configured (Fast failover)
+        if ($openaiKey) {
+            try {
+                $response = Http::timeout(4.0)
+                    ->withToken($openaiKey)
+                    ->post("https://api.openai.com/v1/chat/completions", [
+                        'model' => 'gpt-4o-mini',
+                        'messages' => [
+                            ['role' => 'system', 'content' => $systemPrompt],
+                            ['role' => 'user', 'content' => $userMessage],
+                        ],
+                        'temperature' => 0.4,
+                        'max_tokens' => 600,
+                    ]);
+
+                if ($response->successful()) {
+                    $aiText = $response->json('choices.0.message.content');
+                    if (!empty($aiText)) {
+                        return trim($aiText);
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::warning("OpenAI API call failed: " . $e->getMessage());
+            }
+        }
+
+        // 3. Universal Dynamic Database RAG Fallback Engine (100% domain-agnostic for any company)
+        return $this->universalDatabaseRAG($company, $userMessage);
     }
 
     /**
-     * Ultra-Fast Arabic Semantic & Closest-Match Engine (Bilingual AR / EN).
+     * Universal Dynamic Database RAG Fallback Engine.
+     * Does NOT assume any specific industry. Bases all answers solely on the company's DB records & uploaded files.
      */
-    protected function smartContextualFallback(Company $company, string $userMessage, string $knowledgeContext): string
+    protected function universalDatabaseRAG(Company $company, string $userMessage): string
     {
         $rawMsg = trim($userMessage);
         $msg = mb_strtolower($rawMsg);
@@ -202,495 +231,394 @@ class AiChatService
         $isEnglish = preg_match('/[a-zA-Z]/', $msg) && !preg_match('/[\x{0600}-\x{06FF}]/u', $msg);
         $documents = $company->documents()->where('status', 'ready')->get();
         $contactNum = $company->phone ?: $company->whatsapp_number;
-        $location = $company->address ?: 'المعرض الرئيسي';
+        $location = $company->address ?: 'المقر الرئيسي';
 
-        // 1. Pure Greetings (only when short greeting without other questions)
+        // 1. Pure Greetings
         if (mb_strlen($rawMsg) < 25 && (
             preg_match('/^(مرحبا|السلام عليكم|سلام عليكم|هلا|صباح الخير|مساء الخير|اهلين|سلام|الو|ألو|مساء الورد|يا هلا)$/u', $normMsg) ||
             ($isEnglish && preg_match('/^(hi|hello|hey|good morning|good evening)$/i', $rawMsg))
         )) {
-            if ($isEnglish) {
-                return "Hello and welcome to {$company->name}! 👋\nWe are delighted to assist you. What car or service can we help you with today?";
-            }
             $greeting = $company->settings['greeting_message'] ?? "أهلاً وسهلاً بك في {$company->name}! يسعدنا خدمتك.";
-            return $greeting . " كيف يمكننا مساعدتك اليوم؟ تفضل بطلبك وسأجيبك فوراً عن السيارات المتاحة وأسعارها.";
+            return $greeting . " كيف يمكننا مساعدتك اليوم؟ تفضل بطلبك أو استفسارك وسأجيبك فوراً.";
         }
 
-        // 1.5. Specific Budget / Money Question ("معي انا 40 الف فقط هل ممكن احصل علا سياره", "ميزانيتي 150 الف", "عندي 50 الف")
-        $budgetMatch = $this->extractBudgetFromMessage($normMsg);
-        if ($budgetMatch !== null) {
-            return $this->handleBudgetInquiry($budgetMatch, $documents, $company);
-        }
-
-        // 1.8. Used Cars Inquiry (مستعمل / استخدام / مخزن)
-        if (preg_match('/(مستعمل|مستعمله|مستعملة|استخدام|مستخدم|مستخدمه|مستخدمة|حراج)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(used|second hand|preowned)\b/i', $rawMsg))) {
-            return "أهلاً بك في شركة **{$company->name}**! يسعدنا تواصلك. 🤝\n\n" .
-                "حالياً جميع السيارات المتوفرة لدينا في صالة العرض هي **سيارات جديدة كلياً (أصفار موديل 2025 مع ضمان وبطاقة جمركية)**.\n\n" .
-                "💡 إذا كنت تبحث عن سيارة اقتصادية بأسعار منافسة جداً، لدينا سيارات جديدة تبدأ من **118,000 ريال** (مثل هيونداي سوناتا سمارت بلس 2025) مع إمكانية التقسيط الميسر.\n\n" .
-                "📞 للاستفسار عن أي سيارات أخرى أو التنسيق مع الإدارة: {$contactNum}\n" .
-                "📍 المعرض: {$location}";
-        }
-
-        // 2. Offroad / Desert / 4x4 / SUVs (جيوب / بر / صالون / تطعيس / دفع رباعي)
-        if (preg_match('/(جيب|جيوب|بر|صحراء|تطعيس|اوف رود|أوف رود|دفع رباعي|فور ويل|4x4|صالون|مرتفع|مرتفعه|سيارات بر|موتر بر)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(offroad|4x4|suv|desert|4wd)\b/i', $rawMsg))) {
-            $suvCars = $this->filterCarsByKeywords($documents, ['لاندكروزر', 'باترول', 'اكسبيديشن', 'كايين', 'x5', 'دفع رباعي', 'suv']);
-            if (!empty($suvCars)) {
-                $lines = ["🚗 **أفضل سيارات الدفع الرباعي والجيوب (للطرق الوعرة والبر) المتاحة لدى {$company->name}:**\n"];
-                $i = 1;
-                foreach ($suvCars as $car) {
-                    $lines[] = $this->formatSingleCarRow($car, $i++);
-                }
-                $lines[] = "\n📍 المعرض: {$location} | 📞 للحجز والاستفسار: {$contactNum}";
-                return implode("\n", $lines);
-            }
-        }
-
-        // 3. Cheapest / Budget / Economical (أرخص سيارة / اقتصادية / ميزانية محدودة / بحدود 100-150 ألف)
-        if (preg_match('/(ارخص|أرخص|رخيص|رخيصه|رخيصة|اقتصادي|اقتصاديه|اقتصادية|موفر|ميزانيه|ميزانية|أقل سعر|اقل سعر|اقل شي|أقل شي|صغيره|صغيرة|معقول)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(cheap|cheapest|economic|affordable|budget)\b/i', $rawMsg))) {
-            $budgetSorted = $this->getAllCarsSortedByPrice($documents, 'asc');
-            if (!empty($budgetSorted)) {
-                $lines = ["💰 **أفضل السيارات الاقتصادية والأقل سعراً المتاحة لدى {$company->name}:**\n"];
-                $i = 1;
-                foreach (array_slice($budgetSorted, 0, 4) as $car) {
-                    $lines[] = $this->formatSingleCarRow($car, $i++);
-                }
-                $lines[] = "\n💡 جميع السيارات جديدة ومضمونة ببطاقة جمركية.\n📞 للتواصل المباشر والحجز: {$contactNum}";
-                return implode("\n", $lines);
-            }
-        }
-
-        // 4. Luxury / VIP / Highest Tier (فخمة / فارهة / كشخة / VIP / أعلى فئة)
-        if (preg_match('/(فخم|فخمه|فخمة|كشخه|كشخة|فاره|فارهه|فارهة|vip|اعلى فئه|أعلى فئة|اعلى نوع|أعلى نوع|مميزه|مميزة|ملكي)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(luxury|luxurious|vip|highest)\b/i', $rawMsg))) {
-            $luxSorted = $this->getAllCarsSortedByPrice($documents, 'desc');
-            if (!empty($luxSorted)) {
-                $lines = ["👑 **أفخم السيارات الفارهة (VIP) المتاحة لدى {$company->name}:**\n"];
-                $i = 1;
-                foreach (array_slice($luxSorted, 0, 4) as $car) {
-                    $lines[] = $this->formatSingleCarRow($car, $i++);
-                }
-                $lines[] = "\n✨ تشرفنا زيارتكم لمعاينة السيارات في المعرض: {$location}\n📞 هاتف: {$contactNum}";
-                return implode("\n", $lines);
-            }
-        }
-
-        // 5. Family Cars / Large / 7 Seats (عائلية / كبيرة / واسعة / 7 ركاب / سفر)
-        if (preg_match('/(عائلي|عائليه|عائلية|كبيره|كبيرة|واسعه|واسعة|7 ركاب|سبع ركاب|أطفال|اطفال|سفر|عائله|عائلة)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(family|7 seats|spacious|large)\b/i', $rawMsg))) {
-            $familyCars = $this->filterCarsByKeywords($documents, ['اكسبيديشن', 'باترول', 'لاندكروزر', 'عائلي']);
-            if (!empty($familyCars)) {
-                $lines = ["👨‍👩‍👧‍👦 **أفضل السيارات العائلية الكبيرة والواسعة (7-8 ركاب) لدى {$company->name}:**\n"];
-                $i = 1;
-                foreach ($familyCars as $car) {
-                    $lines[] = $this->formatSingleCarRow($car, $i++);
-                }
-                $lines[] = "\n📞 لحجز موعد المعاينة أو تجربة القيادة: {$contactNum}";
-                return implode("\n", $lines);
-            }
-        }
-
-        // 6. Electric Cars (كهربائية / تسلا / هايبرد)
-        if (preg_match('/(كهرباء|كهربائي|كهربائيه|كهربائية|شحن|هايبرد|تسلا|بطاريه|بطارية)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(electric|ev|tesla|hybrid)\b/i', $rawMsg))) {
-            $electricCars = $this->filterCarsByKeywords($documents, ['تسلا', 'كهربائي', 'model y']);
-            if (!empty($electricCars)) {
-                $lines = ["⚡ **السيارات الكهربائية المتاحة لدى {$company->name}:**\n"];
-                foreach ($electricCars as $car) {
-                    $lines[] = $this->formatItemDetails($car, $isEnglish, $company);
-                }
-                $lines[] = "\n📞 للتواصل المباشر والحجز: {$contactNum}";
-                return implode("\n\n", $lines);
-            }
-        }
-
-        // 7. Installments & Financing (أقساط / تمويل / بنك / دفعة)
-        if (preg_match('/(اقساط|أقساط|تقسيط|تمويل|بنك|دفعه|دفعة|شهر|شهري|شيك|شيكات)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(installment|installments|finance|financing|bank)\b/i', $rawMsg))) {
-            return "💳 **نظام التمويل والأقساط لدى {$company->name}:**\n\nنعم، نوفر خيارات تمويلية ميسرة بالتعاون مع البنوك والجهات التمويلية المعتمدة.\n\n📋 **المتطلبات الأساسية عادة:**\n• تعريف بالراتب أو كشف حساب بنكي.\n• صورة الهوية / الإقامة سارية المفعول.\n• دفعة أولى حسب الفئة ونوع السيارة.\n\n📍 لمراجعة الحسبة الشهرية الدقيقة وتحديد السيارة، يشرفنا زيارتك لمعرضنا في: {$location}\n📞 أو الاتصال بمسؤول التمويل المباشر: {$contactNum}";
-        }
-
-        // 8. Trade-In / Exchange (بدل / استبدال / شراء سيارتي)
-        if (preg_match('/(بدل|تبديل|استبدال|تقبلون بدل|تاخذون سيارتي|شراء سيارتي|تستبدلون)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(trade in|exchange|swap)\b/i', $rawMsg))) {
-            return "🔄 **خدمة الاستبدال والبدل لدى {$company->name}:**\n\nنعم، نرحب بطلبك! يمكنك إحضار سيارتك الحالية لمعرضنا لتقييمها وفحصها من قبل خبرائنا، واستبدالها بإحدى سياراتنا الجديدة موديل 2025 مع دفع الفارق.\n\n📍 موقع المعرض للتقييم: {$location}\n📞 للتنسيق المسبق مع قسم التقييم: {$contactNum}";
-        }
-
-        // 9. Specific Item search in documents (e.g. Toyota, Mercedes, Lexus, BMW, Land Cruiser, etc.)
-        $matchedItems = $this->searchDocumentItems($documents, $rawMsg);
-        if (!empty($matchedItems)) {
-            if (count($matchedItems) <= 3) {
-                $replies = [];
-                foreach ($matchedItems as $item) {
-                    $replies[] = $this->formatItemDetails($item, $isEnglish, $company);
-                }
-                $callToAction = "\n📞 لحجز السيارة أو طلب المعاينة، يمكنك التواصل معنا مباشرة على الرقم: {$contactNum}\n📍 المعرض: {$location}";
-                return implode("\n\n───────────────\n\n", $replies) . $callToAction;
-            }
-            return $this->formatItemListSummary($matchedItems, $isEnglish, $company);
-        }
-
-        // 10. Catalog Intent ("ما هي السيارات", "قائمة السيارات", "اعرض لي", "ايش عندكم", "الكتالوج")
-        $isCatalogQuery = preg_match('/(سيارات|سياره|سيارة|قائمه|قائمة|كتالوج|منتجات|اصناف|أصناف|بضاعه|بضاعة|متوفر|موجود|ايش عندكم|شو عندكم|ماذا لديكم|ما لديكم|اعرض|ورني)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(cars|car|list|catalog|catalogue|inventory|available|models|products|items|show me)\b/i', $rawMsg));
-
-        if ($isCatalogQuery && $documents->count() > 0) {
-            $catalogResponse = $this->formatCatalogList($documents, $isEnglish, $company);
-            if ($catalogResponse) {
-                return $catalogResponse;
-            }
-        }
-
-        // 11. Location / Address
-        if (preg_match('/(موقع|وين|عنوان|مكانكم|حضرموت|المكلا|شارع|فرع|خريطه|خريطة|لوكيشن)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(location|where|address|place|mukalla|hadhramout|map)\b/i', $rawMsg))) {
-            $reply = "📍 موقعنا في {$company->name}:\n" . ($company->address ?: "تفضل بزيارتنا في صالة العرض.");
+        // 2. Location / Address Inquiry
+        if (preg_match('/(موقع|وين|عنوان|مكانكم|شارع|فرع|خريطه|خريطة|لوكيشن)/u', $normMsg) ||
+            ($isEnglish && preg_match('/\b(location|where|address|place|map)\b/i', $rawMsg))) {
+            $reply = "📍 موقعنا في {$company->name}:\n" . ($company->address ?: "تفضل بزيارتنا في مقرنا الرئيسي.");
             if ($company->google_maps_url) {
                 $reply .= "\n🗺 رابط خرائط جوجل: " . $company->google_maps_url;
             }
-            $reply .= "\n📞 هاتف التواصل: {$contactNum}";
+            if ($contactNum) $reply .= "\n📞 هاتف التواصل: {$contactNum}";
             return $reply;
         }
 
-        // 12. Working Hours
+        // 3. Working Hours Inquiry
         if (preg_match('/(دوام|وقت|ساعات|تفتحون|تغلقون|ايام|متى)/u', $normMsg) ||
             ($isEnglish && preg_match('/\b(hours|working hours|open|time|schedule)\b/i', $rawMsg))) {
             return "⏰ أوقات العمل في {$company->name}:\n" . ($company->working_hours ?: "من 8 صباحاً حتى 10 مساءً، ويسعدنا دائماً استقبالكم.") . "\n📞 هاتف: {$contactNum}";
         }
 
-        // 13. Contact / Phone
+        // 4. Contact / Support Inquiry
         if (preg_match('/(رقم|اتصال|تواصل|هاتف|جوال|ايميل|دعم|خدمة عملاء|مسؤول)/u', $normMsg) ||
             ($isEnglish && preg_match('/\b(contact|phone|call|email|whatsapp|number|support)\b/i', $rawMsg))) {
-            $reply = "📞 معلومات التواصل مع شركة {$company->name}:\n";
+            $reply = "📞 معلومات التواصل مع منشأة {$company->name}:\n";
             if ($company->phone) $reply .= "• هاتف: {$company->phone}\n";
             if ($company->whatsapp_number) $reply .= "• واتساب: {$company->whatsapp_number}\n";
-            if ($company->support_phone) $reply .= "• مسؤول المبيعات: {$company->support_phone}\n";
-            $reply .= "📍 المعرض: {$location}";
+            if ($company->support_phone) $reply .= "• مسؤول المبيعات المباشر: {$company->support_phone}\n";
+            if ($company->address) $reply .= "📍 الموقع: {$company->address}";
             return trim($reply);
         }
 
-        // 14. Universal Closest-Match Fallback (أقرب جواب - لا نترك العميل بدون إفادة أبداً)
-        if ($documents->count() > 0) {
-            $catalog = $this->formatCatalogList($documents, $isEnglish, $company);
-            if ($catalog) {
-                return "أهلاً بك في شركة **{$company->name}**! يسعدنا خدمتك والرد على استفسارك.\n\nإليك قائمة بأحدث السيارات والأسعار المتاحة لدينا في المعرض حالياً:\n\n" . $catalog;
+        // 5. About Us / What do you offer
+        if (preg_match('/(من انتم|من أنتم|نبذه|نبذة|عنكم|عن المنشاه|عن المنشأة|عن الشركه|عن الشركة|نشاطكم|مشروعكم|ماهو مشروعكم|ما هو مشروعكم)/u', $normMsg) ||
+            ($isEnglish && preg_match('/\b(who are you|about|about us|company|services)\b/i', $rawMsg))) {
+            $reply = "🏢 نبذة عن {$company->name}:\n";
+            $reply .= ($company->about_us ?: "نحن نقدم أفضل المنتجات والخدمات ونهتم بتوفير أعلى معايير الجودة والأسعار لعملائنا.");
+            if ($company->services_offered) {
+                $reply .= "\n\n💡 أبرز ما نقدمه:\n" . $company->services_offered;
+            }
+            if ($contactNum) $reply .= "\n\n📞 للتواصل والاستفسار: {$contactNum}";
+            return $reply;
+        }
+
+        // 6. Dynamic Budget / Numeric Inquiry (Evaluates customer's mentioned amount against any numeric price column in the DB)
+        $userBudget = $this->extractBudgetFromMessage($normMsg);
+        if ($userBudget !== null && $documents->count() > 0) {
+            $budgetReply = $this->evaluateDynamicBudgetAgainstData($userBudget, $documents, $company);
+            if ($budgetReply) {
+                return $budgetReply;
             }
         }
 
-        return "أهلاً بك في شركة **{$company->name}**! يسعدنا خدمتك.\nيمكنك الاستفسار عن أي نوع سيارة أو طراز، أو طلب قائمة الأسعار والمواصفات فوراً.\n\n📍 المعرض: {$location}\n📞 هاتف: {$contactNum}";
-    }
-
-    /**
-     * Helper to filter cars by multiple fuzzy keywords.
-     */
-    protected function filterCarsByKeywords($documents, array $keywords): array
-    {
-        $filtered = [];
-        foreach ($documents as $doc) {
-            if (empty($doc->extracted_data) || !is_array($doc->extracted_data)) continue;
-            foreach ($doc->extracted_data as $car) {
-                $brand = $car['الشركة المصنعة'] ?? $car['الشركة'] ?? '';
-                $model = $car['الطراز'] ?? $car['الموديل'] ?? '';
-                if (empty(trim($brand)) && empty(trim($model))) continue;
-
-                $text = $this->normalizeArabic(implode(' ', array_values($car)));
-                foreach ($keywords as $kw) {
-                    $normKw = $this->normalizeArabic($kw);
-                    if (mb_strpos($text, $normKw) !== false) {
-                        $filtered[] = $car;
-                        break;
-                    }
+        // 7. Universal Semantic Document Search (Scans any table/document row for query keywords)
+        $matchedRows = $this->searchDynamicDocumentRows($documents, $normMsg);
+        if (!empty($matchedRows)) {
+            if (count($matchedRows) <= 3) {
+                $replies = [];
+                foreach ($matchedRows as $row) {
+                    $replies[] = $this->formatDynamicRowDetails($row, $company);
                 }
+                $callToAction = "\n📞 للتواصل المباشر والطلب: {$contactNum}";
+                if ($location) $callToAction .= "\n📍 الموقع: {$location}";
+                return implode("\n\n───────────────\n\n", $replies) . $callToAction;
             }
+            return $this->formatDynamicSummaryList($matchedRows, $company);
         }
-        return $filtered;
-    }
 
-    /**
-     * Helper to sort all cars by price.
-     */
-    protected function getAllCarsSortedByPrice($documents, string $direction = 'asc'): array
-    {
-        $cars = [];
-        foreach ($documents as $doc) {
-            if (empty($doc->extracted_data) || !is_array($doc->extracted_data)) continue;
-            foreach ($doc->extracted_data as $car) {
-                $brand = $car['الشركة المصنعة'] ?? $car['الشركة'] ?? '';
-                $model = $car['الطراز'] ?? $car['الموديل'] ?? '';
-                if (empty(trim($brand)) && empty(trim($model))) continue;
+        // 8. General Catalog / Offerings Request ("ايش عندكم", "اعرض لي", "قائمتكم", "اسعاركم", "الكتالوج")
+        $isCatalogIntent = preg_match('/(قائمه|قائمة|كتالوج|منتجات|اصناف|أصناف|بضاعه|بضاعة|متوفر|موجود|ايش عندكم|شو عندكم|ماذا لديكم|ما لديكم|اعرض|ورني|عطني|اسعار|اسعاركم)/u', $normMsg) ||
+            ($isEnglish && preg_match('/\b(list|catalog|catalogue|inventory|available|products|items|show me|prices)\b/i', $rawMsg));
 
-                $rawPrice = $car['السعر (ريال سعودي)'] ?? $car['السعر'] ?? '0';
-                $numPrice = (float)preg_replace('/[^0-9]/', '', (string)$rawPrice);
-                if ($numPrice <= 0) continue; // Skip zero/empty price rows
-                $car['_num_price'] = $numPrice;
-                $cars[] = $car;
+        if ($isCatalogIntent && $documents->count() > 0) {
+            $catalogResponse = $this->formatDynamicCatalogOverview($documents, $company);
+            if ($catalogResponse) {
+                return $catalogResponse;
             }
         }
 
-        usort($cars, function ($a, $b) use ($direction) {
-            return $direction === 'asc' 
-                ? ($a['_num_price'] <=> $b['_num_price']) 
-                : ($b['_num_price'] <=> $a['_num_price']);
-        });
-
-        return $cars;
-    }
-
-    /**
-     * Format a clean single line for a car row.
-     */
-    protected function formatSingleCarRow(array $car, int $index): string
-    {
-        $brand = $car['الشركة المصنعة'] ?? $car['الشركة'] ?? '';
-        $model = $car['الطراز'] ?? $car['الموديل'] ?? '';
-        $year = $car['سنة الصنع'] ?? '2025';
-        $category = $car['الفئة'] ?? '';
-        $price = $car['السعر (ريال سعودي)'] ?? $car['السعر'] ?? '';
-        $engine = $car['نوع المحرك'] ?? '';
-
-        $priceStr = '';
-        if ($price) {
-            $formattedPrice = is_numeric(str_replace(',', '', $price)) ? number_format((float)str_replace(',', '', $price)) : $price;
-            $priceStr = " — **{$formattedPrice} ر.س**";
+        // 9. Universal Fallback: If no specific match, display company's offerings and top data preview
+        if ($documents->count() > 0) {
+            $catalogOverview = $this->formatDynamicCatalogOverview($documents, $company);
+            if ($catalogOverview) {
+                return "أهلاً بك في **{$company->name}**! يسعدنا خدمتك والرد على استفسارك.\n\n" . $catalogOverview;
+            }
         }
 
-        $extra = trim("{$category} " . ($engine ? "({$engine})" : ''));
-        return "{$index}. **{$brand} {$model} {$year}**" . ($extra ? " ({$extra})" : "") . $priceStr;
+        $defaultReply = "أهلاً بك في **{$company->name}**! يسعدنا تواصلك.\n";
+        if ($company->about_us) $defaultReply .= "{$company->about_us}\n";
+        if ($company->services_offered) $defaultReply .= "💡 خدماتنا: {$company->services_offered}\n";
+        if ($contactNum) $defaultReply .= "📞 للتواصل المباشر: {$contactNum}\n";
+        if ($company->address) $defaultReply .= "📍 الموقع: {$company->address}";
+
+        return trim($defaultReply);
     }
 
     /**
-     * Search extracted document items for keyword match with smart normalization.
+     * Search any document's extracted rows for matching query tokens (domain-agnostic).
      */
-    protected function searchDocumentItems($documents, string $query): array
+    protected function searchDynamicDocumentRows($documents, string $normQuery): array
     {
         $matches = [];
-        $cleanQuery = $this->normalizeArabic($query);
+        $words = preg_split('/\s+/u', $normQuery);
 
-        // Words from query, stripping common Arabic particles
-        $words = preg_split('/\s+/u', $cleanQuery);
-        $searchTerms = [];
-        foreach ($words as $w) {
-            $w = trim($w);
-            // Strip leading 'ال'
-            if (mb_strlen($w) > 3 && (mb_substr($w, 0, 2) === 'ال')) {
-                $sub = mb_substr($w, 2);
-                if (mb_strlen($sub) > 3 && (mb_substr($sub, 0, 2) === 'ال')) {
-                    $searchTerms[] = mb_substr($sub, 2);
-                }
-                $searchTerms[] = $sub;
-            }
-            if (mb_strlen($w) >= 2) {
-                $searchTerms[] = $w;
-            }
-        }
-        $searchTerms = array_unique(array_filter($searchTerms));
+        // Filter out stop words that don't indicate a product or feature
+        $stopWords = ['في', 'من', 'ما', 'هي', 'شو', 'ايش', 'وش', 'هل', 'عن', 'عندكم', 'موجود', 'متوفر', 'اريد', 'ابغى', 'ابي', 'احتاج', 'كم', 'سعر', 'اسعار', 'بكم', 'فقط', 'معي', 'عندي', 'ممكن', 'احصل', 'علا', 'على'];
+        $filteredWords = array_values(array_diff($words, $stopWords));
 
-        // Skip generic stop words
-        $stopWords = ['سياره', 'سيارة', 'سيارات', 'نريد', 'اريد', 'ابغى', 'عندكم', 'موجود', 'متوفر', 'كم', 'سعر', 'اسعار', 'في', 'من', 'ما', 'هي', 'شو', 'ايش', 'وش'];
-        $filteredTerms = array_values(array_diff($searchTerms, $stopWords));
-
-        // Expand with common Arabic dialect synonyms
-        $synonymsMap = [
-            'مرسدس' => ['مرسيدس', 's500'],
-            'بنز' => ['مرسيدس'],
-            'يخت' => ['مرسيدس', 's500'],
-            'كروزر' => ['لاندكروزر', 'تويوتا'],
-            'لاند' => ['لاندكروزر'],
-            'صالون' => ['لاندكروزر', 'باترول'],
-            'هونداي' => ['هيونداي', 'سوناتا'],
-            'بي ام' => ['بي إم دبليو', 'x5'],
-            'اكسبدشن' => ['إكسبيديشن', 'اكسبيديشن', 'فورد'],
-            'باترول' => ['نيسان', 'بلاتينيوم'],
-            'كايين' => ['بورش'],
-            'كي8' => ['كيا', 'k8'],
-            'ارنبه' => ['لكزس', 'es350'],
-        ];
-
-        foreach ($filteredTerms as $ft) {
-            foreach ($synonymsMap as $keySyn => $equivalents) {
-                if (mb_strpos($ft, $keySyn) !== false) {
-                    $filteredTerms = array_merge($filteredTerms, $equivalents);
-                }
-            }
-        }
-        $filteredTerms = array_unique($filteredTerms);
-
-        if (empty($filteredTerms)) {
+        if (empty($filteredWords)) {
             return [];
         }
 
         foreach ($documents as $doc) {
-            if (empty($doc->extracted_data) || !is_array($doc->extracted_data)) {
-                continue;
-            }
+            if (empty($doc->extracted_data) || !is_array($doc->extracted_data)) continue;
 
-            foreach ($doc->extracted_data as $item) {
-                $itemText = mb_strtolower(implode(' ', array_values($item)));
-                $normItemText = $this->normalizeArabic($itemText);
+            foreach ($doc->extracted_data as $row) {
+                if (!is_array($row) || empty(array_filter($row))) continue;
 
-                $matched = false;
-                foreach ($filteredTerms as $term) {
-                    if (mb_strpos($normItemText, $term) !== false) {
-                        $matched = true;
-                        break;
+                $rowText = $this->normalizeArabic(implode(' ', array_values($row)));
+                $score = 0;
+
+                foreach ($filteredWords as $w) {
+                    if (mb_strlen($w) >= 2 && mb_strpos($rowText, $w) !== false) {
+                        $score += 1;
                     }
                 }
 
-                if ($matched) {
-                    $matches[] = $item;
+                if ($score > 0) {
+                    $row['_score'] = $score;
+                    $matches[] = $row;
                 }
             }
         }
+
+        // Sort by highest keyword score
+        usort($matches, fn($a, $b) => ($b['_score'] ?? 0) <=> ($a['_score'] ?? 0));
 
         return $matches;
     }
 
     /**
-     * Format full details of a single product/car.
+     * Format a single document row dynamically using its actual column keys.
      */
-    protected function formatItemDetails(array $item, bool $isEnglish, Company $company): string
+    protected function formatDynamicRowDetails(array $row, Company $company): string
     {
-        $brand = $item['الشركة المصنعة'] ?? $item['الشركة'] ?? $item['brand'] ?? $item['make'] ?? '';
-        $model = $item['الطراز'] ?? $item['النوع'] ?? $item['الموديل'] ?? $item['model'] ?? '';
-        $year = $item['سنة الصنع'] ?? $item['الموديل'] ?? $item['year'] ?? '';
-        $category = $item['الفئة'] ?? $item['category'] ?? '';
-        $price = $item['السعر (ريال سعودي)'] ?? $item['السعر'] ?? $item['price'] ?? '';
-        $colorExt = $item['اللون الخارجي'] ?? $item['color_ext'] ?? '';
-        $colorInt = $item['اللون الداخلي'] ?? $item['color_int'] ?? '';
-        $engine = $item['نوع المحرك'] ?? $item['المحرك'] ?? $item['engine'] ?? '';
-        $horsepower = $item['قوة المحرك (حصان)'] ?? $item['القوة'] ?? $item['hp'] ?? '';
-        $gearbox = $item['ناقل الحركة'] ?? $item['القير'] ?? $item['transmission'] ?? '';
-        $driveType = $item['نوع الدفع'] ?? $item['دفع'] ?? $item['drivetrain'] ?? '';
-        $condition = $item['الحالة'] ?? $item['condition'] ?? 'جديدة';
-        $features = $item['مواصفات إضافية'] ?? $item['المواصفات'] ?? $item['features'] ?? '';
-
-        $title = trim("{$brand} {$model} {$year}");
-        if (empty($title)) {
-            $title = $item['اسم الباقة'] ?? $item['الاسم'] ?? $item['name'] ?? 'تفاصيل العنصر';
-        }
-
+        unset($row['_score'], $row['_num_price']);
         $lines = [];
-        $lines[] = "🚗 **{$title}** (" . ($category ?: 'المواصفات') . ")";
-        if ($price) {
-            $formattedPrice = is_numeric(str_replace(',', '', $price)) ? number_format((float)str_replace(',', '', $price)) : $price;
-            $lines[] = "💰 **السعر:** {$formattedPrice} ريال سعودي";
+
+        // Determine title: first non-empty text column
+        $title = '';
+        foreach ($row as $k => $v) {
+            if (!empty(trim((string)$v)) && !is_numeric($v)) {
+                $title = trim((string)$v);
+                break;
+            }
         }
-        if ($condition) {
-            $lines[] = "✨ **الحالة:** {$condition}";
-        }
-        if ($engine || $horsepower) {
-            $engineStr = $engine;
-            if ($horsepower) $engineStr .= " ({$horsepower} حصان)";
-            $lines[] = "⚙️ **المحرك:** {$engineStr}";
-        }
-        if ($gearbox || $driveType) {
-            $gearStr = trim("{$gearbox} - {$driveType}", " -");
-            $lines[] = "🕹 **ناقل الحركة والدفع:** {$gearStr}";
-        }
-        if ($colorExt || $colorInt) {
-            $colorStr = "";
-            if ($colorExt) $colorStr .= "خارجي: {$colorExt}";
-            if ($colorInt) $colorStr .= " | داخلي: {$colorInt}";
-            $lines[] = "🎨 **الألوان:** {$colorStr}";
-        }
-        if ($features) {
-            $lines[] = "🌟 **أبرز المواصفات:** {$features}";
+
+        $lines[] = "✨ **" . ($title ?: 'تفاصيل الصنف / الخدمة') . "**";
+
+        foreach ($row as $colName => $colValue) {
+            $colName = trim((string)$colName);
+            $colValue = trim((string)$colValue);
+            if (empty($colValue)) continue;
+
+            // Detect price columns
+            if ($this->isPriceColumn($colName)) {
+                $formatted = is_numeric(str_replace(',', '', $colValue)) ? number_format((float)str_replace(',', '', $colValue)) : $colValue;
+                $lines[] = "💰 **{$colName}:** {$formatted} ريال";
+            } else {
+                $lines[] = "• **{$colName}:** {$colValue}";
+            }
         }
 
         return implode("\n", $lines);
     }
 
     /**
-     * Format a summary list of multiple items.
+     * Format a dynamic summary list of multiple matching rows.
      */
-    protected function formatItemListSummary(array $items, bool $isEnglish, Company $company): string
+    protected function formatDynamicSummaryList(array $rows, Company $company): string
     {
-        $lines = [];
-        $lines[] = "🚗 **السيارات المطابقة لطلبك لدى " . $company->name . ":**\n";
-
+        $lines = ["📋 **الخيارات والخدمات المطابقة لطلبك لدى {$company->name}:**\n"];
         $i = 1;
-        foreach (array_slice($items, 0, 8) as $item) {
-            $brand = $item['الشركة المصنعة'] ?? $item['الشركة'] ?? '';
-            $model = $item['الطراز'] ?? $item['الموديل'] ?? '';
-            $year = $item['سنة الصنع'] ?? '';
-            $price = $item['السعر (ريال سعودي)'] ?? $item['السعر'] ?? '';
-            $category = $item['الفئة'] ?? '';
 
-            $priceStr = '';
-            if ($price) {
-                $formattedPrice = is_numeric(str_replace(',', '', $price)) ? number_format((float)str_replace(',', '', $price)) : $price;
-                $priceStr = " — {$formattedPrice} ر.س";
+        foreach (array_slice($rows, 0, 7) as $row) {
+            unset($row['_score'], $row['_num_price']);
+            $firstCol = '';
+            $priceCol = '';
+
+            foreach ($row as $k => $v) {
+                if (empty($firstCol) && !empty(trim((string)$v))) {
+                    $firstCol = trim((string)$v);
+                }
+                if ($this->isPriceColumn($k) && !empty(trim((string)$v))) {
+                    $formatted = is_numeric(str_replace(',', '', $v)) ? number_format((float)str_replace(',', '', $v)) : $v;
+                    $priceCol = " — **{$formatted} ريال**";
+                }
             }
 
-            $lines[] = "{$i}. **{$brand} {$model} {$year}** ({$category}){$priceStr}";
+            $lines[] = "{$i}. **{$firstCol}**{$priceCol}";
             $i++;
         }
 
         $contactNum = $company->phone ?: $company->whatsapp_number;
-        $lines[] = "\n💡 لمعرفة تفاصيل ومواصفات أي سيارة، فقط اذكر اسمها وسأعطيك كامل تفاصيلها فوراً!";
-        $lines[] = "📞 للحجز والاستفسار المباشر: {$contactNum}";
+        $lines[] = "\n💡 اذكر اسم أي صنف أو خدمة لمعرفة تفاصيلها فوراً، أو تواصل معنا على: {$contactNum}";
 
         return implode("\n", $lines);
     }
 
     /**
-     * Format full catalog list from uploaded documents.
+     * Format dynamic catalog overview from whatever documents are stored for this company.
      */
-    protected function formatCatalogList($documents, bool $isEnglish, Company $company): ?string
+    protected function formatDynamicCatalogOverview($documents, Company $company): ?string
     {
-        $allCars = [];
+        $allRows = [];
 
         foreach ($documents as $doc) {
             if (!empty($doc->extracted_data) && is_array($doc->extracted_data)) {
                 foreach ($doc->extracted_data as $row) {
-                    $brand = $row['الشركة المصنعة'] ?? $row['الشركة'] ?? '';
-                    $model = $row['الطراز'] ?? $row['الموديل'] ?? '';
-                    if (!empty($brand) || !empty($model)) {
-                        $allCars[] = $row;
+                    if (is_array($row) && !empty(array_filter($row))) {
+                        $allRows[] = $row;
                     }
                 }
             }
         }
 
-        if (empty($allCars)) {
-            // Check if document has markdown table in extracted_text
+        if (empty($allRows)) {
+            // Text document fallback
             foreach ($documents as $doc) {
-                if (!empty($doc->extracted_text) && str_contains($doc->extracted_text, '|')) {
-                    return "📋 **قائمة الأسعار والخدمات المتاحة لدى {$company->name}:**\n\n" . mb_substr($doc->extracted_text, 0, 1500);
+                if (!empty($doc->extracted_text)) {
+                    return "📋 **قائمة البيانات المتاحة لدى {$company->name}:**\n\n" . mb_substr($doc->extracted_text, 0, 1200);
                 }
             }
             return null;
         }
 
-        $lines = [];
-        $lines[] = "🚗 **قائمة السيارات المتاحة وأسعارها لدى " . $company->name . ":**\n";
-
+        $lines = ["📋 **قائمة الأصناف والخدمات المتاحة لدى {$company->name}:**\n"];
         $i = 1;
-        foreach ($allCars as $car) {
-            $brand = $car['الشركة المصنعة'] ?? '';
-            $model = $car['الطراز'] ?? '';
-            $year = $car['سنة الصنع'] ?? '2025';
-            $category = $car['الفئة'] ?? '';
-            $price = $car['السعر (ريال سعودي)'] ?? $car['السعر'] ?? '';
 
+        foreach (array_slice($allRows, 0, 10) as $row) {
+            $labelParts = [];
             $priceStr = '';
-            if ($price) {
-                $formattedPrice = is_numeric(str_replace(',', '', $price)) ? number_format((float)str_replace(',', '', $price)) : $price;
-                $priceStr = " — **{$formattedPrice} ر.س**";
+
+            foreach ($row as $k => $v) {
+                $v = trim((string)$v);
+                if (empty($v)) continue;
+
+                if ($this->isPriceColumn($k)) {
+                    $formatted = is_numeric(str_replace(',', '', $v)) ? number_format((float)str_replace(',', '', $v)) : $v;
+                    $priceStr = " — **{$formatted} ريال**";
+                } elseif (count($labelParts) < 2 && !is_numeric($v)) {
+                    $labelParts[] = $v;
+                }
             }
 
-            $catStr = $category ? " ({$category})" : "";
-            $lines[] = "{$i}. **{$brand} {$model} {$year}**{$catStr}{$priceStr}";
+            $label = implode(' ', $labelParts);
+            $lines[] = "{$i}. **{$label}**{$priceStr}";
             $i++;
         }
 
         $contactNum = $company->phone ?: $company->whatsapp_number;
-        $lines[] = "\n✨ **هل ترغب في معرفة كامل المواصفات أو حجز أي سيارة؟**";
-        $lines[] = "فقط اكتب اسم السيارة وسأعرض لك صورها ومواصفاتها، أو تواصل معنا مباشرة على: {$contactNum}";
+        $lines[] = "\n✨ لمعرفة تفاصيل أي عنصر أو طلبه، يمكنك الرد باسمه أو الاتصال بنا: {$contactNum}";
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * Dynamically evaluate a customer's mentioned budget against document price columns.
+     */
+    protected function evaluateDynamicBudgetAgainstData(float $budget, $documents, Company $company): ?string
+    {
+        $rowsWithPrice = [];
+
+        foreach ($documents as $doc) {
+            if (empty($doc->extracted_data) || !is_array($doc->extracted_data)) continue;
+
+            foreach ($doc->extracted_data as $row) {
+                if (!is_array($row)) continue;
+
+                foreach ($row as $k => $v) {
+                    if ($this->isPriceColumn($k)) {
+                        $numericPrice = (float)preg_replace('/[^0-9]/', '', (string)$v);
+                        if ($numericPrice > 0) {
+                            $row['_num_price'] = $numericPrice;
+                            $rowsWithPrice[] = $row;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (empty($rowsWithPrice)) return null;
+
+        // Sort by price ascending
+        usort($rowsWithPrice, fn($a, $b) => ($a['_num_price'] <=> $b['_num_price']));
+
+        $cheapest = $rowsWithPrice[0];
+        $minPrice = $cheapest['_num_price'];
+        $formattedBudget = number_format($budget);
+        $contactNum = $company->phone ?: $company->whatsapp_number;
+        $location = $company->address ?: 'المقر الرئيسي';
+
+        // Case 1: Budget is less than minimum price
+        if ($budget < $minPrice) {
+            $cheapestTitle = '';
+            foreach ($cheapest as $k => $v) {
+                if (!empty(trim((string)$v)) && !is_numeric($v) && !$this->isPriceColumn($k)) {
+                    $cheapestTitle = trim((string)$v);
+                    break;
+                }
+            }
+            $cheapestPriceStr = number_format($minPrice);
+
+            return "أهلاً بك في **{$company->name}**! يسعدنا خدمتك والرد على استفسارك بدقة. 🤝\n\n" .
+                "بخصوص ميزانيتك المذكورة (**{$formattedBudget} ريال**):\n" .
+                "• أقل خيار متوفر لدينا يبدأ بسعر كاش (**{$cheapestPriceStr} ريال**) لـ ({$cheapestTitle}).\n\n" .
+                "💡 **الخيارات المتاحة لخدمتك:**\n" .
+                "• يمكنك الاستفادة من مبلغ (**{$formattedBudget} ريال**) كـ **دفعة أولى** في حال توفر نظام التقسيط أو التسهيلات الميسرة.\n" .
+                "• كما نرحب بتواصلك المباشر مع الإدارة للاستفسار عن أي عروض أو خيارات خاصة: {$contactNum}\n" .
+                "📍 الموقع: {$location}";
+        }
+
+        // Case 2: Budget fits items
+        $matching = [];
+        foreach ($rowsWithPrice as $row) {
+            if ($row['_num_price'] <= $budget * 1.15) {
+                $matching[] = $row;
+            }
+        }
+
+        $lines = [
+            "أهلاً بك في **{$company->name}**! يسعدنا تواصلك.",
+            "بخصوص ميزانيتك المحددة (**{$formattedBudget} ريال**)، إليك أنسب الخيارات المتاحة لدينا في حدود هذه الميزانية:\n"
+        ];
+
+        $i = 1;
+        foreach (array_slice($matching, 0, 4) as $item) {
+            $title = '';
+            foreach ($item as $k => $v) {
+                if (!empty(trim((string)$v)) && !is_numeric($v) && !$this->isPriceColumn($k)) {
+                    $title = trim((string)$v);
+                    break;
+                }
+            }
+            $priceStr = number_format($item['_num_price']);
+            $lines[] = "{$i}. **{$title}** — **{$priceStr} ريال**";
+            $i++;
+        }
+
+        $lines[] = "\n📞 للحجز والاستفسار المباشر: {$contactNum}\n📍 الموقع: {$location}";
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Check if a column name represents price/cost.
+     */
+    protected function isPriceColumn(string $colName): bool
+    {
+        $norm = $this->normalizeArabic($colName);
+        return (bool)preg_match('/(سعر|قيمه|قيمة|تكلفه|تكلفة|مبلغ|price|cost|fee|amount|fee)/u', $norm);
+    }
+
+    /**
+     * Extract budget/amount mentioned by customer in Arabic or English.
+     */
+    protected function extractBudgetFromMessage(string $normMsg): ?float
+    {
+        // Matches e.g. "40 الف", "40الف", "150 الف", "150k"
+        if (preg_match('/([0-9]{1,4})\s*(?:الف|ألف|k)/u', $normMsg, $m)) {
+            $val = (float)$m[1] * 1000;
+            if ($val > 1000) return $val;
+        }
+
+        // Matches e.g. "40000", "120000"
+        if (preg_match('/(?:معي|عندي|ميزانيتي|ميزانية|بحدود|حوالي|قدرتي|فلوسي|بمبلغ|ب|احصل)\s*([0-9]{4,7})/u', $normMsg, $m)) {
+            $val = (float)$m[1];
+            if ($val >= 5000) return $val;
+        }
+
+        return null;
     }
 
     /**
@@ -719,80 +647,5 @@ class AiChatService
         $text = preg_replace('/\s+/u', ' ', $text);
 
         return trim($text);
-    }
-
-    /**
-     * Extract mentioned budget/amount from customer inquiry.
-     */
-    protected function extractBudgetFromMessage(string $normMsg): ?float
-    {
-        // 1. Matches patterns like: "40 الف", "40الف", "150 الف", "150k"
-        if (preg_match('/([0-9]{1,4})\s*(?:الف|ألف|k)/u', $normMsg, $m)) {
-            $val = (float)$m[1] * 1000;
-            if ($val > 1000) return $val;
-        }
-
-        // 2. Matches full numbers like: "40000", "120000"
-        if (preg_match('/(?:معي|عندي|ميزانيتي|ميزانية|بحدود|حوالي|قدرتي|فلوسي|بمبلغ|ب|احصل)\s*([0-9]{4,7})/u', $normMsg, $m)) {
-            $val = (float)$m[1];
-            if ($val >= 5000) return $val;
-        }
-
-        return null;
-    }
-
-    /**
-     * Handle budget-specific inquiries directly and persuasively.
-     */
-    protected function handleBudgetInquiry(float $budget, $documents, Company $company): string
-    {
-        $contactNum = $company->phone ?: $company->whatsapp_number;
-        $location = $company->address ?: 'المعرض الرئيسي';
-        $sortedCars = $this->getAllCarsSortedByPrice($documents, 'asc');
-
-        if (empty($sortedCars)) {
-            return "أهلاً بك في شركة **{$company->name}**! يسعدنا خدمتك.\nبخصوص الميزانية، نرجو التواصل مباشرة مع مسؤول المبيعات لترشيح أفضل الخيارات المتاحة: {$contactNum}";
-        }
-
-        $cheapestCar = $sortedCars[0];
-        $minPrice = $cheapestCar['_num_price'] ?? 118000;
-        $formattedBudget = number_format($budget);
-
-        // Scenario A: Budget is lower than cheapest cash car (e.g. 40,000 SAR)
-        if ($budget < $minPrice) {
-            $cheapestTitle = trim(($cheapestCar['الشركة المصنعة'] ?? '') . ' ' . ($cheapestCar['الطراز'] ?? '') . ' ' . ($cheapestCar['سنة الصنع'] ?? '2025'));
-            $cheapestPriceStr = number_format($minPrice);
-
-            return "أهلاً بك في شركة **{$company->name}**! يسعدنا خدمتك والرد على استفسارك بدقة. 🤝\n\n" .
-                "بخصوص ميزانيتك الحالية (**{$formattedBudget} ريال**):\n" .
-                "• جميع سياراتنا المعروضة في الصالة حالياً هي سيارات جديدة كلياً (موديل 2025 مضمونة وبطاقة جمركية)، وأقل سيارة سعراً لدينا كاش هي:\n" .
-                "  🚗 **{$cheapestTitle}** بسعر **{$cheapestPriceStr} ريال سعودي**.\n\n" .
-                "💡 **الحل الأفضل والمتاح لطلبك:**\n" .
-                "يمكنك الاستفادة من مبلغ الـ (**{$formattedBudget} ريال**) كـ **(دفعة أولى ممتازة)** لشراء السيارة بنظام **الأقساط والتمويل الميسر**، واستلام سيارتك الجديدة فوراً وتقسيط المتبقي على دفعات شهرية مريحة جداً تناسب دخلك!\n\n" .
-                "📍 لمراجعة الحسبة والأقساط، يشرفنا زيارتك لمعرضنا في: {$location}\n" .
-                "📞 أو التواصل المباشر مع مسؤول المبيعات والتمويل: {$contactNum}";
-        }
-
-        // Scenario B: Budget matches one or more cash cars (e.g. 150,000 or 300,000 SAR)
-        $matchingCars = [];
-        foreach ($sortedCars as $car) {
-            if ($car['_num_price'] <= $budget * 1.15) {
-                $matchingCars[] = $car;
-            }
-        }
-
-        $lines = [
-            "أهلاً بك في شركة **{$company->name}**! يسعدنا خدمتك.",
-            "بخصوص ميزانيتك المحددة (**{$formattedBudget} ريال**)، إليك أنسب السيارات المتاحة لدينا في المعرض القريبة من ميزانيتك:\n"
-        ];
-
-        $i = 1;
-        foreach (array_slice($matchingCars, 0, 4) as $car) {
-            $lines[] = $this->formatSingleCarRow($car, $i++);
-        }
-
-        $lines[] = "\n💡 جميع السيارات جديدة ومضمونة ببطاقة جمركية.\n📍 المعرض: {$location}\n📞 للحجز والاستفسار المباشر: {$contactNum}";
-
-        return implode("\n", $lines);
     }
 }

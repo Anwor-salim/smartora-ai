@@ -143,48 +143,59 @@ class AiChatService
 
         // 1. Try Google Gemini API
         if ($geminiKey) {
-            try {
-                $response = Http::timeout(4.5)
-                    ->connectTimeout(2.5)
-                    ->post("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={$geminiKey}", [
-                        'contents' => [
-                            [
-                                'role' => 'user',
-                                'parts' => [
-                                    ['text' => $systemPrompt . "\n\nسؤال العميل:\n" . $userMessage]
-                                ]
-                            ]
-                        ],
-                        'generationConfig' => [
-                            'temperature' => 0.4,
-                            'maxOutputTokens' => 800,
-                            'thinkingConfig' => [
-                                'thinkingBudget' => 0
-                            ]
-                        ]
-                    ]);
+            $configuredModel = $company->settings['gemini_model'] ?? 'models/gemini-flash-lite-latest';
+            if (!str_starts_with($configuredModel, 'models/')) {
+                $configuredModel = 'models/' . $configuredModel;
+            }
 
-                if ($response->successful()) {
-                    $json = $response->json();
-                    $parts = $json['candidates'][0]['content']['parts'] ?? [];
-                    $aiText = '';
-                    foreach ($parts as $p) {
-                        if (empty($p['thought']) && !empty($p['text'])) {
-                            $aiText .= $p['text'];
+            $modelsToTry = array_values(array_unique([
+                $configuredModel,
+                'models/gemini-flash-lite-latest',
+                'models/gemini-3.5-flash-lite',
+                'models/gemini-3.5-flash',
+            ]));
+
+            foreach ($modelsToTry as $currentModel) {
+                try {
+                    $response = Http::timeout(5.0)
+                        ->connectTimeout(2.5)
+                        ->post("https://generativelanguage.googleapis.com/v1beta/{$currentModel}:generateContent?key={$geminiKey}", [
+                            'contents' => [
+                                [
+                                    'role' => 'user',
+                                    'parts' => [
+                                        ['text' => $systemPrompt . "\n\nسؤال العميل:\n" . $userMessage]
+                                    ]
+                                ]
+                            ],
+                            'generationConfig' => [
+                                'temperature' => 0.4,
+                                'maxOutputTokens' => 800,
+                            ]
+                        ]);
+
+                    if ($response->successful()) {
+                        $json = $response->json();
+                        $parts = $json['candidates'][0]['content']['parts'] ?? [];
+                        $aiText = '';
+                        foreach ($parts as $p) {
+                            if (empty($p['thought']) && !empty($p['text'])) {
+                                $aiText .= $p['text'];
+                            }
                         }
+                        if (empty($aiText) && !empty($parts)) {
+                            $lastPart = end($parts);
+                            $aiText = $lastPart['text'] ?? '';
+                        }
+                        if (!empty($aiText)) {
+                            return trim($aiText);
+                        }
+                    } else {
+                        Log::warning("Gemini model {$currentModel} returned status " . $response->status());
                     }
-                    if (empty($aiText) && !empty($parts)) {
-                        $lastPart = end($parts);
-                        $aiText = $lastPart['text'] ?? '';
-                    }
-                    if (!empty($aiText)) {
-                        return trim($aiText);
-                    }
-                } else {
-                    Log::warning("Gemini returned status " . $response->status() . " - switching to dynamic database RAG engine");
+                } catch (\Exception $e) {
+                    Log::warning("Gemini timeout/error on {$currentModel}: " . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                Log::warning("Gemini timeout/error: " . $e->getMessage() . " - switching to dynamic database RAG engine");
             }
         }
 

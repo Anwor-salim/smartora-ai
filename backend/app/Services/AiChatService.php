@@ -249,13 +249,20 @@ class AiChatService
             preg_match('/^(مرحبا|السلام عليكم|سلام عليكم|هلا|صباح الخير|مساء الخير|اهلين|سلام|الو|ألو|مساء الورد|يا هلا)$/u', $normMsg) ||
             ($isEnglish && preg_match('/^(hi|hello|hey|good morning|good evening)$/i', $rawMsg))
         )) {
-            $greeting = $company->settings['greeting_message'] ?? "أهلاً وسهلاً بك في {$company->name}! يسعدنا خدمتك.";
+            $configuredGreeting = trim((string) ($company->settings['greeting_message'] ?? ''));
+            $greeting = $configuredGreeting !== '' ? $configuredGreeting : "أهلاً وسهلاً بك في {$company->name}! يسعدنا خدمتك.";
             return $greeting . " كيف يمكننا مساعدتك اليوم؟ تفضل بطلبك أو استفسارك وسأجيبك فوراً.";
         }
 
-        // 2. Location / Address Inquiry
-        if (preg_match('/(موقع|وين|عنوان|مكانكم|شارع|فرع|خريطه|خريطة|لوكيشن)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(location|where|address|place|map)\b/i', $rawMsg))) {
+        // Run document search early so specific inquiries matching PDF/Excel items take precedence over generic company fields
+        $matchedRows = $documents->count() > 0 ? $this->searchDynamicDocumentRows($documents, $normMsg) : [];
+        $hasStrongDocumentMatch = !empty($matchedRows) && (($matchedRows[0]['_score'] ?? 0) >= 2);
+
+        // 2. Location / Address Inquiry (only when not targeting a specific document section)
+        if (!$hasStrongDocumentMatch && (
+            preg_match('/(موقع|وين|عنوان|مكانكم|شارع|فرع|خريطه|خريطة|لوكيشن)/u', $normMsg) ||
+            ($isEnglish && preg_match('/\b(location|where|address|place|map)\b/i', $rawMsg))
+        )) {
             $reply = "📍 موقعنا في {$company->name}:\n" . ($company->address ?: "تفضل بزيارتنا في مقرنا الرئيسي.");
             if ($company->google_maps_url) {
                 $reply .= "\n🗺 رابط خرائط جوجل: " . $company->google_maps_url;
@@ -264,15 +271,19 @@ class AiChatService
             return $reply;
         }
 
-        // 3. Working Hours Inquiry
-        if (preg_match('/(دوام|وقت|ساعات|تفتحون|تغلقون|ايام|متى)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(hours|working hours|open|time|schedule)\b/i', $rawMsg))) {
+        // 3. Working Hours Inquiry (only when not targeting a specific document section)
+        if (!$hasStrongDocumentMatch && (
+            preg_match('/(دوام|وقت|ساعات|تفتحون|تغلقون|ايام|متى)/u', $normMsg) ||
+            ($isEnglish && preg_match('/\b(hours|working hours|open|time|schedule)\b/i', $rawMsg))
+        )) {
             return "⏰ أوقات العمل في {$company->name}:\n" . ($company->working_hours ?: "من 8 صباحاً حتى 10 مساءً، ويسعدنا دائماً استقبالكم.") . "\n📞 هاتف: {$contactNum}";
         }
 
-        // 4. Contact / Support Inquiry
-        if (preg_match('/(رقم|اتصال|تواصل|هاتف|جوال|ايميل|دعم|خدمة عملاء|مسؤول)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(contact|phone|call|email|whatsapp|number|support)\b/i', $rawMsg))) {
+        // 4. Contact / Support Inquiry (only when not targeting a specific document section)
+        if (!$hasStrongDocumentMatch && (
+            preg_match('/(رقم|اتصال|تواصل|هاتف|جوال|ايميل|دعم|خدمة عملاء|مسؤول)/u', $normMsg) ||
+            ($isEnglish && preg_match('/\b(contact|phone|call|email|whatsapp|number|support)\b/i', $rawMsg))
+        )) {
             $reply = "📞 معلومات التواصل مع منشأة {$company->name}:\n";
             if ($company->phone) $reply .= "• هاتف: {$company->phone}\n";
             if ($company->whatsapp_number) $reply .= "• واتساب: {$company->whatsapp_number}\n";
@@ -281,9 +292,11 @@ class AiChatService
             return trim($reply);
         }
 
-        // 5. About Us / What do you offer
-        if (preg_match('/(من انتم|من أنتم|نبذه|نبذة|عنكم|عن المنشاه|عن المنشأة|عن الشركه|عن الشركة|نشاطكم|مشروعكم|ماهو مشروعكم|ما هو مشروعكم)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(who are you|about|about us|company|services)\b/i', $rawMsg))) {
+        // 5. About Us / What do you offer (only if no document rows match)
+        if (!$hasStrongDocumentMatch && (
+            preg_match('/(من انتم|من أنتم|نبذه|نبذة|عنكم|عن المنشاه|عن المنشأة|عن الشركه|عن الشركة|نشاطكم|مشروعكم|ماهو مشروعكم|ما هو مشروعكم)/u', $normMsg) ||
+            ($isEnglish && preg_match('/\b(who are you|about|about us|company|services)\b/i', $rawMsg))
+        )) {
             $reply = "🏢 نبذة عن {$company->name}:\n";
             $reply .= ($company->about_us ?: "نحن نقدم أفضل المنتجات والخدمات ونهتم بتوفير أعلى معايير الجودة والأسعار لعملائنا.");
             if ($company->services_offered) {
@@ -302,8 +315,7 @@ class AiChatService
             }
         }
 
-        // 7. Universal Semantic Document Search (Scans any table/document row for query keywords)
-        $matchedRows = $this->searchDynamicDocumentRows($documents, $normMsg);
+        // 7. Universal Semantic Document Search (Scans structured rows and PDF/text sections for query keywords)
         if (!empty($matchedRows)) {
             if (count($matchedRows) <= 3) {
                 $replies = [];
@@ -317,9 +329,9 @@ class AiChatService
             return $this->formatDynamicSummaryList($matchedRows, $company);
         }
 
-        // 8. General Catalog / Offerings Request ("ايش عندكم", "اعرض لي", "قائمتكم", "اسعاركم", "الكتالوج")
-        $isCatalogIntent = preg_match('/(قائمه|قائمة|كتالوج|منتجات|اصناف|أصناف|بضاعه|بضاعة|متوفر|موجود|ايش عندكم|شو عندكم|ماذا لديكم|ما لديكم|اعرض|ورني|عطني|اسعار|اسعاركم)/u', $normMsg) ||
-            ($isEnglish && preg_match('/\b(list|catalog|catalogue|inventory|available|products|items|show me|prices)\b/i', $rawMsg));
+        // 8. General Catalog / Offerings Request ("ايش عندكم", "اعرض لي", "قائمتكم", "اسعاركم", "العيادات", "الخدمات")
+        $isCatalogIntent = preg_match('/(قائمه|قائمة|كتالوج|منتجات|اصناف|أصناف|بضاعه|بضاعة|متوفر|موجود|ايش عندكم|شو عندكم|ماذا لديكم|ما لديكم|اعرض|ورني|عطني|اسعار|اسعاركم|عيادات|عياده|عيادة|اقسام|أقسام|تخصصات|خدمات|خدماتكم|اطباء|أطباء|دكاتره|دكاترة)/u', $normMsg) ||
+            ($isEnglish && preg_match('/\b(list|catalog|catalogue|inventory|available|products|items|show me|prices|clinics|departments|services|doctors)\b/i', $rawMsg));
 
         if ($isCatalogIntent && $documents->count() > 0) {
             $catalogResponse = $this->formatDynamicCatalogOverview($documents, $company);
@@ -346,15 +358,21 @@ class AiChatService
     }
 
     /**
-     * Search any document's extracted rows for matching query tokens (domain-agnostic).
+     * Search any document's extracted rows or text sections for matching query tokens (domain-agnostic).
      */
     protected function searchDynamicDocumentRows($documents, string $normQuery): array
     {
         $matches = [];
         $words = preg_split('/\s+/u', $normQuery);
 
-        // Filter out stop words that don't indicate a product or feature
-        $stopWords = ['في', 'من', 'ما', 'هي', 'شو', 'ايش', 'وش', 'هل', 'عن', 'عندكم', 'موجود', 'متوفر', 'اريد', 'ابغى', 'ابي', 'احتاج', 'كم', 'سعر', 'اسعار', 'بكم', 'فقط', 'معي', 'عندي', 'ممكن', 'احصل', 'علا', 'على'];
+        // Filter out stop words that don't indicate a product, clinic, or feature
+        $stopWords = [
+            'في', 'من', 'ما', 'هي', 'هو', 'هم', 'شو', 'ايش', 'وش', 'هل', 'عن', 'عندكم', 'لديكم',
+            'عندك', 'موجود', 'موجوده', 'متوفر', 'متوفره', 'المتوفره', 'الموجوده', 'اريد', 'ابغى',
+            'ابي', 'احتاج', 'كم', 'سعر', 'اسعار', 'بكم', 'فقط', 'معي', 'عندي', 'ممكن', 'احصل',
+            'علا', 'على', 'الي', 'اللي', 'التي', 'الذي', 'التفاصيل', 'تفاصيل', 'معلومات', 'بخصوص',
+            'وين', 'اين', 'مكان', 'موقع', 'رقم', 'واتساب', 'واتس', 'تواصل', 'دكتور', 'طبيب', 'اسم'
+        ];
         $filteredWords = array_values(array_diff($words, $stopWords));
 
         if (empty($filteredWords)) {
@@ -362,47 +380,140 @@ class AiChatService
         }
 
         foreach ($documents as $doc) {
-            if (empty($doc->extracted_data) || !is_array($doc->extracted_data)) continue;
+            $docHasRowMatch = false;
+            $dataRows = is_array($doc->extracted_data) && array_is_list($doc->extracted_data)
+                ? $doc->extracted_data
+                : [];
 
-            foreach ($doc->extracted_data as $row) {
-                if (!is_array($row) || empty(array_filter($row))) continue;
-
-                $rowText = $this->normalizeArabic(implode(' ', array_values($row)));
-                $score = 0;
-
-                foreach ($filteredWords as $w) {
-                    $w = trim($w);
-                    if (mb_strlen($w) < 2) continue;
-
-                    // Direct match
-                    if (mb_strpos($rowText, $w) !== false) {
-                        $score += 2;
-                    }
-                    // Strip leading "ال" or "الل" (Arabic definite article)
-                    elseif (mb_strlen($w) > 3 && mb_substr($w, 0, 2) === 'ال') {
-                        $sub = mb_substr($w, 2);
-                        if (mb_strpos($rowText, $sub) !== false) {
-                            $score += 2;
-                        } elseif (mb_strlen($sub) > 3 && mb_substr($sub, 0, 2) === 'ال') {
-                            $sub2 = mb_substr($sub, 2);
-                            if (mb_strpos($rowText, $sub2) !== false) {
-                                $score += 2;
-                            }
-                        }
-                    }
+            foreach ($dataRows as $row) {
+                if (!is_array($row) || empty(array_filter($row))) {
+                    continue;
                 }
+
+                $combinedText = implode(' ', array_merge(array_keys($row), array_values($row)));
+                $rowText = $this->normalizeArabic($combinedText);
+                $score = $this->scoreTextAgainstQueryWords($rowText, $filteredWords);
 
                 if ($score > 0) {
                     $row['_score'] = $score;
                     $matches[] = $row;
+                    $docHasRowMatch = true;
+                }
+            }
+
+            // Fallback: search raw extracted_text paragraphs if no structured rows matched
+            if (!$docHasRowMatch && !empty($doc->extracted_text)) {
+                $blocks = preg_split("/\n{2,}/u", (string) $doc->extracted_text, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+                foreach ($blocks as $block) {
+                    $block = trim($block);
+                    if ($block === '' || str_starts_with($block, '### محتوى ملف')) {
+                        continue;
+                    }
+
+                    $normBlock = $this->normalizeArabic($block);
+                    $score = $this->scoreTextAgainstQueryWords($normBlock, $filteredWords);
+                    if ($score > 0) {
+                        $lines = array_values(array_filter(array_map('trim', explode("\n", $block))));
+                        $heading = $lines[0] ?? 'تفاصيل المستند';
+                        $details = count($lines) > 1 ? implode("\n", array_slice($lines, 1)) : $block;
+                        $matches[] = [
+                            'القسم / البند' => $heading,
+                            'التفاصيل' => $details,
+                            '_score' => $score,
+                        ];
+                    }
                 }
             }
         }
 
         // Sort by highest keyword score
-        usort($matches, fn($a, $b) => ($b['_score'] ?? 0) <=> ($a['_score'] ?? 0));
+        usort($matches, fn ($a, $b) => ($b['_score'] ?? 0) <=> ($a['_score'] ?? 0));
 
         return $matches;
+    }
+
+    /**
+     * Score normalized text against filtered normalized query words using Arabic stemming.
+     */
+    protected function scoreTextAgainstQueryWords(string $normText, array $filteredWords): int
+    {
+        $score = 0;
+
+        foreach ($filteredWords as $w) {
+            $w = trim($w);
+            if (mb_strlen($w) < 2) {
+                continue;
+            }
+
+            $candidates = $this->extractArabicStems($w);
+            foreach ($candidates as $idx => $candidate) {
+                if (mb_strlen($candidate) >= 2 && mb_strpos($normText, $candidate) !== false) {
+                    // Exact match gets slightly higher weight than stripped stem match
+                    $score += ($idx === 0) ? 3 : 2;
+                    break;
+                }
+            }
+        }
+
+        return $score;
+    }
+
+    /**
+     * Generate normalized Arabic search stems for prefixes, suffixes, and common broken plurals.
+     */
+    protected function extractArabicStems(string $word): array
+    {
+        $stems = [$word];
+
+        $pluralMap = [
+            'عيادات' => ['عياد', 'عياده'],
+            'العيادات' => ['عياد', 'عياده'],
+            'عياده' => ['عياد'],
+            'العياده' => ['عياد'],
+            'اطباء' => ['طبيب', 'د.'],
+            'الاطباء' => ['طبيب', 'د.'],
+            'دكاتره' => ['طبيب', 'دكتور', 'د.'],
+            'اقسام' => ['قسم', 'عياد'],
+            'الاقسام' => ['قسم', 'عياد'],
+            'اسعار' => ['سعر'],
+            'الاسعار' => ['سعر'],
+            'مواعيد' => ['موعد', 'وقت', 'دوام'],
+            'المواعيد' => ['موعد', 'وقت', 'دوام'],
+            'تخصصات' => ['تخصص', 'عياد'],
+            'التخصصات' => ['تخصص', 'عياد'],
+        ];
+
+        if (isset($pluralMap[$word])) {
+            foreach ($pluralMap[$word] as $mapped) {
+                $stems[] = $mapped;
+            }
+        }
+
+        // Strip common leading prefixes (ال, وال, بال, لل, كال, و, ب, ل)
+        $prefixes = ['وال', 'بال', 'كال', 'لل', 'ال', 'و', 'ب', 'ل'];
+        $strippedList = [$word];
+        foreach ($prefixes as $prefix) {
+            $pLen = mb_strlen($prefix);
+            if (mb_strlen($word) > $pLen + 2 && mb_substr($word, 0, $pLen) === $prefix) {
+                $sub = mb_substr($word, $pLen);
+                $stems[] = $sub;
+                $strippedList[] = $sub;
+            }
+        }
+
+        // Strip plural / feminine suffixes (ات, ين, ون, ه) when resulting stem >= 3 chars
+        foreach ($strippedList as $base) {
+            foreach (['ات', 'ين', 'ون'] as $suffix) {
+                if (mb_strlen($base) >= 5 && mb_substr($base, -2) === $suffix) {
+                    $stems[] = mb_substr($base, 0, -2);
+                }
+            }
+            if (mb_strlen($base) >= 4 && mb_substr($base, -1) === 'ه') {
+                $stems[] = mb_substr($base, 0, -1);
+            }
+        }
+
+        return array_values(array_unique($stems));
     }
 
     /**
@@ -415,9 +526,11 @@ class AiChatService
 
         // Determine title: first non-empty text column
         $title = '';
+        $titleKey = null;
         foreach ($row as $k => $v) {
-            if (!empty(trim((string)$v)) && !is_numeric($v)) {
-                $title = trim((string)$v);
+            if (!empty(trim((string) $v)) && !is_numeric($v)) {
+                $title = trim((string) $v);
+                $titleKey = (string) $k;
                 break;
             }
         }
@@ -425,14 +538,21 @@ class AiChatService
         $lines[] = "✨ **" . ($title ?: 'تفاصيل الصنف / الخدمة') . "**";
 
         foreach ($row as $colName => $colValue) {
-            $colName = trim((string)$colName);
-            $colValue = trim((string)$colValue);
+            $colName = trim((string) $colName);
+            $colValue = trim((string) $colValue);
             if (empty($colValue)) continue;
+
+            // Avoid printing the heading twice when it's already used as title
+            if ($colName === $titleKey && $colValue === $title) {
+                continue;
+            }
 
             // Detect price columns
             if ($this->isPriceColumn($colName)) {
-                $formatted = is_numeric(str_replace(',', '', $colValue)) ? number_format((float)str_replace(',', '', $colValue)) : $colValue;
+                $formatted = is_numeric(str_replace(',', '', $colValue)) ? number_format((float) str_replace(',', '', $colValue)) : $colValue;
                 $lines[] = "💰 **{$colName}:** {$formatted} ريال";
+            } elseif ($colName === 'التفاصيل') {
+                $lines[] = $colValue;
             } else {
                 $lines[] = "• **{$colName}:** {$colValue}";
             }
@@ -446,30 +566,39 @@ class AiChatService
      */
     protected function formatDynamicSummaryList(array $rows, Company $company): string
     {
-        $lines = ["📋 **الخيارات والخدمات المطابقة لطلبك لدى {$company->name}:**\n"];
+        $lines = ["📋 **الخيارات والمعلومات المطابقة لطلبك لدى {$company->name}:**\n"];
         $i = 1;
 
-        foreach (array_slice($rows, 0, 7) as $row) {
+        foreach (array_slice($rows, 0, 12) as $row) {
             unset($row['_score'], $row['_num_price']);
             $firstCol = '';
+            $detailCol = '';
             $priceCol = '';
 
             foreach ($row as $k => $v) {
-                if (empty($firstCol) && !empty(trim((string)$v))) {
-                    $firstCol = trim((string)$v);
-                }
-                if ($this->isPriceColumn($k) && !empty(trim((string)$v))) {
-                    $formatted = is_numeric(str_replace(',', '', $v)) ? number_format((float)str_replace(',', '', $v)) : $v;
+                $v = trim((string) $v);
+                if (empty($v)) continue;
+
+                if (empty($firstCol)) {
+                    $firstCol = $v;
+                } elseif ($k === 'التفاصيل' && $v !== $firstCol) {
+                    $detailCol = "\n   " . str_replace("\n", "\n   ", $v);
+                } elseif ($this->isPriceColumn((string) $k)) {
+                    $formatted = is_numeric(str_replace(',', '', $v)) ? number_format((float) str_replace(',', '', $v)) : $v;
                     $priceCol = " — **{$formatted} ريال**";
                 }
             }
 
-            $lines[] = "{$i}. **{$firstCol}**{$priceCol}";
-            $i++;
+            if ($detailCol !== '') {
+                $lines[] = "🔹 **{$firstCol}**{$priceCol}{$detailCol}";
+            } else {
+                $lines[] = "{$i}. **{$firstCol}**{$priceCol}";
+                $i++;
+            }
         }
 
         $contactNum = $company->phone ?: $company->whatsapp_number;
-        $lines[] = "\n💡 اذكر اسم أي صنف أو خدمة لمعرفة تفاصيلها فوراً، أو تواصل معنا على: {$contactNum}";
+        $lines[] = "\n💡 اذكر اسم أي بند أو عيادة لمعرفة تفاصيلها فوراً، أو تواصل معنا على: {$contactNum}";
 
         return implode("\n", $lines);
     }
@@ -482,7 +611,7 @@ class AiChatService
         $allRows = [];
 
         foreach ($documents as $doc) {
-            if (!empty($doc->extracted_data) && is_array($doc->extracted_data)) {
+            if (!empty($doc->extracted_data) && is_array($doc->extracted_data) && array_is_list($doc->extracted_data)) {
                 foreach ($doc->extracted_data as $row) {
                     if (is_array($row) && !empty(array_filter($row))) {
                         $allRows[] = $row;
@@ -495,38 +624,57 @@ class AiChatService
             // Text document fallback
             foreach ($documents as $doc) {
                 if (!empty($doc->extracted_text)) {
-                    return "📋 **قائمة البيانات المتاحة لدى {$company->name}:**\n\n" . mb_substr($doc->extracted_text, 0, 1200);
+                    return "📋 **قائمة البيانات المتاحة لدى {$company->name}:**\n\n" . mb_substr($doc->extracted_text, 0, 2500);
                 }
             }
             return null;
         }
 
-        $lines = ["📋 **قائمة الأصناف والخدمات المتاحة لدى {$company->name}:**\n"];
+        $lines = ["📋 **قائمة البيانات والخدمات المتاحة لدى {$company->name}:**\n"];
         $i = 1;
+        $isPdfSections = isset($allRows[0]['القسم / البند']);
 
-        foreach (array_slice($allRows, 0, 10) as $row) {
-            $labelParts = [];
-            $priceStr = '';
-
-            foreach ($row as $k => $v) {
-                $v = trim((string)$v);
-                if (empty($v)) continue;
-
-                if ($this->isPriceColumn($k)) {
-                    $formatted = is_numeric(str_replace(',', '', $v)) ? number_format((float)str_replace(',', '', $v)) : $v;
-                    $priceStr = " — **{$formatted} ريال**";
-                } elseif (count($labelParts) < 2 && !is_numeric($v)) {
-                    $labelParts[] = $v;
+        if ($isPdfSections) {
+            $charBudget = 2500;
+            $currentLen = 0;
+            foreach (array_slice($allRows, 0, 15) as $row) {
+                $heading = trim((string) ($row['القسم / البند'] ?? ''));
+                $details = trim((string) ($row['التفاصيل'] ?? ''));
+                $entry = "🔹 **{$heading}**";
+                if ($details !== '' && $details !== $heading) {
+                    $entry .= "\n" . $details;
                 }
+                if ($currentLen + mb_strlen($entry) > $charBudget) {
+                    break;
+                }
+                $lines[] = $entry;
+                $currentLen += mb_strlen($entry);
             }
+        } else {
+            foreach (array_slice($allRows, 0, 12) as $row) {
+                $labelParts = [];
+                $priceStr = '';
 
-            $label = implode(' ', $labelParts);
-            $lines[] = "{$i}. **{$label}**{$priceStr}";
-            $i++;
+                foreach ($row as $k => $v) {
+                    $v = trim((string) $v);
+                    if (empty($v)) continue;
+
+                    if ($this->isPriceColumn((string) $k)) {
+                        $formatted = is_numeric(str_replace(',', '', $v)) ? number_format((float) str_replace(',', '', $v)) : $v;
+                        $priceStr = " — **{$formatted} ريال**";
+                    } elseif (count($labelParts) < 2 && !is_numeric($v)) {
+                        $labelParts[] = $v;
+                    }
+                }
+
+                $label = implode(' ', $labelParts);
+                $lines[] = "{$i}. **{$label}**{$priceStr}";
+                $i++;
+            }
         }
 
         $contactNum = $company->phone ?: $company->whatsapp_number;
-        $lines[] = "\n✨ لمعرفة تفاصيل أي عنصر أو طلبه، يمكنك الرد باسمه أو الاتصال بنا: {$contactNum}";
+        $lines[] = "\n✨ لمعرفة تفاصيل أي عنصر أو الاستفسار عنه، يمكنك الرد باسمه أو الاتصال بنا: {$contactNum}";
 
         return implode("\n", $lines);
     }

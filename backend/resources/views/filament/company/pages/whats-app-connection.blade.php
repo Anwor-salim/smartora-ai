@@ -208,17 +208,24 @@
 
                 <div class="space-y-3 text-xs">
                     <div>
-                        <span class="text-gray-500 block mb-1">رابط الويب هوك المخصص (Webhook URL):</span>
+                        <span class="text-gray-500 block mb-1">رابط الويب هوك (n8n / API Webhook URL):</span>
                         <div class="p-2.5 bg-gray-50 dark:bg-gray-900 font-mono text-[11px] rounded-lg border border-gray-200 dark:border-gray-800 select-all break-all text-emerald-600 dark:text-emerald-400">
                             {{ url('/api/webhook/whatsapp') }}
                         </div>
                     </div>
 
+                    <div>
+                        <span class="text-gray-500 block mb-1">رابط WAHA المباشر (رد آلي مباشر بدون n8n):</span>
+                        <div class="p-2.5 bg-gray-50 dark:bg-gray-900 font-mono text-[11px] rounded-lg border border-gray-200 dark:border-gray-800 select-all break-all text-sky-600 dark:text-sky-400">
+                            {{ url('/api/webhook/waha') }}
+                        </div>
+                    </div>
+
                     <div class="grid grid-cols-2 gap-2">
                         <div>
-                            <span class="text-gray-500 block mb-1">طريقة الإرسال:</span>
-                            <span class="inline-block px-2 py-1 bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 rounded font-mono font-bold">
-                                POST (JSON)
+                            <span class="text-gray-500 block mb-1">جلسة WAHA الخاصة بالمنشأة:</span>
+                            <span class="inline-block px-2 py-1 bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 rounded font-mono font-bold">
+                                {{ $company?->getWahaSessionName() }}
                             </span>
                         </div>
                         <div>

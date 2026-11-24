@@ -69,16 +69,26 @@ class WhatsAppConnection extends Page
             $this->connectedAt = $company->whatsapp_connected_at?->format('d/m/Y H:i') ?? now()->format('d/m/Y H:i');
             $this->qrCodeUrl = null;
 
-            // Sync with company model if needed safely
+            // Sync with company model safely (separate status update so a duplicate phone doesn't block connected status)
             if ($company->whatsapp_session_status !== 'connected' || ($connectedPhone && $company->whatsapp_number !== $connectedPhone)) {
+                $updateData = [
+                    'whatsapp_session_status' => 'connected',
+                    'whatsapp_connected_at' => $company->whatsapp_connected_at ?? now(),
+                ];
+
+                $numberBelongsToAnother = $connectedPhone
+                    && Company::where('id', '!=', $company->id)
+                        ->where('whatsapp_number', $connectedPhone)
+                        ->exists();
+
+                if ($connectedPhone && !$numberBelongsToAnother) {
+                    $updateData['whatsapp_number'] = $connectedPhone;
+                }
+
                 try {
-                    $company->update([
-                        'whatsapp_session_status' => 'connected',
-                        'whatsapp_number' => $connectedPhone,
-                        'whatsapp_connected_at' => $company->whatsapp_connected_at ?? now(),
-                    ]);
+                    $company->update($updateData);
                 } catch (\Throwable $e) {
-                    \Illuminate\Support\Facades\Log::warning("Could not sync whatsapp_number: " . $e->getMessage());
+                    \Illuminate\Support\Facades\Log::warning("Could not sync whatsapp_number for company {$company->id}: " . $e->getMessage());
                 }
             }
         } else {

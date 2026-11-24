@@ -44,7 +44,16 @@ class CompanyPanelProvider extends PanelProvider
                 \Filament\View\PanelsRenderHook::USER_MENU_BEFORE,
                 fn () => view('filament.components.language-switch'),
             )
+            ->renderHook(
+                \Filament\View\PanelsRenderHook::PAGE_START,
+                fn () => view('filament.components.super-admin-impersonation-banner'),
+            )
             ->userMenuItems([
+                \Filament\Navigation\MenuItem::make()
+                    ->label(fn () => 'العودة للوحة الإدارة العامة (Admin Panel)')
+                    ->icon('heroicon-o-shield-check')
+                    ->url('/admin/companies')
+                    ->visible(fn () => auth()->user()?->isSuperAdmin() ?? false),
                 \Filament\Navigation\MenuItem::make()
                     ->label(fn () => app()->getLocale() === 'ar' ? 'English (EN)' : 'العربية (AR)')
                     ->icon('heroicon-o-language')

@@ -27,5 +27,13 @@ $handleLocaleSwitch = function (string $locale) {
 Route::get('/switch-language/{locale}', $handleLocaleSwitch)->name('switch-language');
 Route::get('/company/switch-language/{locale}', $handleLocaleSwitch)->name('company.switch-language');
 Route::get('/admin/switch-language/{locale}', $handleLocaleSwitch)->name('admin.switch-language');
+Route::get('/admin/switch-company/{company}', function (\App\Models\Company $company) {
+    $user = auth()->user();
+    if (! $user || ! $user->isSuperAdmin()) {
+        return redirect('/admin/login');
+    }
+    $user->update(['company_id' => $company->id]);
+    return redirect('/company');
+})->middleware(['web', 'auth'])->name('admin.switch-company');
 
 

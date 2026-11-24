@@ -1,6 +1,6 @@
 {
   "id": "smartora-wa-auto-reply-1",
-  "name": "SmartOra AI - WhatsApp Auto-Responder",
+  "name": "SmartOra AI - Multi-Tenant WhatsApp Auto-Responder",
   "active": true,
   "nodes": [
     {
@@ -19,7 +19,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst webhookBody = input.body || input;\nconst payload = webhookBody.payload || webhookBody;\n\n// 1. Ignore outgoing messages from ourselves\nif (payload.fromMe === true || payload._data?.key?.fromMe === true) {\n  return [];\n}\n\n// 2. Extract message text\nlet rawText = '';\nif (typeof payload.body === 'string') {\n  rawText = payload.body;\n} else if (payload.message && typeof payload.message.conversation === 'string') {\n  rawText = payload.message.conversation;\n} else if (payload._data?.message?.conversation && typeof payload._data.message.conversation === 'string') {\n  rawText = payload._data.message.conversation;\n} else if (payload._data?.message?.extendedTextMessage?.text) {\n  rawText = payload._data.message.extendedTextMessage.text;\n} else if (typeof payload.text === 'string') {\n  rawText = payload.text;\n}\n\nif (!rawText || typeof rawText !== 'string' || !rawText.trim()) {\n  return [];\n}\n\n// 3. Extract Customer Phone and ChatId\nconst remoteJid = payload._data?.key?.remoteJid || payload.from || '';\nconst remoteJidAlt = payload._data?.key?.remoteJidAlt || '';\n\nlet customerPhone = '';\nif (remoteJidAlt && remoteJidAlt.includes('@')) {\n  customerPhone = remoteJidAlt.split('@')[0].replace(/\\D/g, '');\n} else if (remoteJid && (remoteJid.includes('@s.whatsapp.net') || remoteJid.includes('@c.us'))) {\n  customerPhone = remoteJid.split('@')[0].replace(/\\D/g, '');\n} else {\n  customerPhone = remoteJid.replace(/\\D/g, '');\n}\n\nconst customerChatId = customerPhone ? (customerPhone + '@c.us') : (payload.from || remoteJid);\n\n// 4. Extract Customer Name\nlet name = payload.pushName || payload._data?.pushName || 'عميل كريم';\nname = name.replace(/^~+|~+$/g, '').trim();\n\nreturn [{\n  json: {\n    customer_phone: customerPhone,\n    customer_chatId: customerChatId,\n    customer_name: name,\n    raw_message: rawText,\n    manager_chatId: '967730881873@c.us'\n  }\n}];"
+        "jsCode": "const input = $input.first().json;\nconst webhookBody = input.body || input;\nconst payload = webhookBody.payload || webhookBody;\n\n// 1. Ignore non-message WAHA events (e.g. session.status, message.ack)\nconst event = webhookBody.event || '';\nif (event && event !== 'message' && event !== 'message.any') {\n  return [];\n}\n\n// 2. Ignore outgoing messages from ourselves\nif (payload.fromMe === true || payload._data?.key?.fromMe === true) {\n  return [];\n}\n\n// 3. Extract the exact WAHA session that received this message (e.g. company_5, default)\nconst sessionName = (webhookBody.session || payload.session || '').toString().trim();\n\n// 4. Ignore group messages, status broadcasts, and newsletters/channels\nconst rawFrom = (payload.from || payload._data?.key?.remoteJid || '').toString();\nif (\n  rawFrom.includes('@g.us') ||\n  rawFrom.includes('@broadcast') ||\n  rawFrom.includes('@newsletter')\n) {\n  return [];\n}\n\n// 5. Extract message text\nlet rawText = '';\nif (typeof payload.body === 'string') {\n  rawText = payload.body;\n} else if (payload.message && typeof payload.message.conversation === 'string') {\n  rawText = payload.message.conversation;\n} else if (payload._data?.message?.conversation && typeof payload._data.message.conversation === 'string') {\n  rawText = payload._data.message.conversation;\n} else if (payload._data?.message?.extendedTextMessage?.text) {\n  rawText = payload._data.message.extendedTextMessage.text;\n} else if (typeof payload.text === 'string') {\n  rawText = payload.text;\n}\n\nif (!rawText || typeof rawText !== 'string' || !rawText.trim()) {\n  return [];\n}\n\n// Helper: strip @domain and :device suffix, keep digits only\nconst cleanJid = (jid) => {\n  if (!jid || typeof jid !== 'string') return '';\n  return jid.split('@')[0].split(':')[0].replace(/\\D/g, '');\n};\n\n// 6. Extract Customer Phone and ChatId (handling @lid via remoteJidAlt)\nconst remoteJid = payload._data?.key?.remoteJid || payload.from || '';\nconst remoteJidAlt = payload._data?.key?.remoteJidAlt || '';\n\nlet customerPhone = '';\nif (remoteJidAlt && remoteJidAlt.includes('@')) {\n  customerPhone = cleanJid(remoteJidAlt);\n} else if (remoteJid && (remoteJid.includes('@s.whatsapp.net') || remoteJid.includes('@c.us'))) {\n  customerPhone = cleanJid(remoteJid);\n} else if (payload.from && (payload.from.includes('@s.whatsapp.net') || payload.from.includes('@c.us'))) {\n  customerPhone = cleanJid(payload.from);\n} else {\n  customerPhone = cleanJid(remoteJid);\n}\n\nconst customerChatId = customerPhone\n  ? (customerPhone + '@c.us')\n  : (payload.from || remoteJid);\n\n// 7. Extract Receiving Company WhatsApp Number dynamically (from WAHA me.id or payload.to)\nconst rawCompanyJid = webhookBody.me?.id || payload.to || webhookBody.to || '';\nconst companyWhatsapp = cleanJid(rawCompanyJid);\n\n// 8. Extract Customer Name\nlet name = payload.pushName || payload._data?.pushName || 'عميل كريم';\nname = name.replace(/^~+|~+$/g, '').trim();\n\nreturn [{\n  json: {\n    session: sessionName,\n    company_whatsapp: companyWhatsapp,\n    customer_phone: customerPhone,\n    customer_chatId: customerChatId,\n    customer_name: name,\n    raw_message: rawText.trim()\n  }\n}];"
       },
       "id": "node-parse-sender",
       "name": "Parse Message & Sender",
@@ -42,7 +42,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  customer_phone: $json.customer_phone,\n  company_whatsapp: '967730881873',\n  message: $json.raw_message\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  session: $json.session,\n  company_whatsapp: $json.company_whatsapp,\n  customer_phone: $json.customer_phone,\n  customer_chatId: $json.customer_chatId,\n  message: $json.raw_message\n}) }}",
         "options": {
           "timeout": 15000,
           "response": {
@@ -71,6 +71,15 @@
             {
               "id": "cond-has-reply",
               "leftValue": "={{ $json.reply }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            },
+            {
+              "id": "cond-has-session",
+              "leftValue": "={{ $json.session || $('Parse Message & Sender').item.json.session }}",
               "rightValue": "",
               "operator": {
                 "type": "string",
@@ -107,7 +116,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  session: 'default',\n  chatId: $('Parse Message & Sender').item.json.customer_chatId,\n  text: $json.reply\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  session: $json.session || $('Parse Message & Sender').item.json.session,\n  chatId: $json.customer_chat_id || $('Parse Message & Sender').item.json.customer_chatId,\n  text: $json.reply\n}) }}",
         "options": {
           "timeout": 15000,
           "response": {

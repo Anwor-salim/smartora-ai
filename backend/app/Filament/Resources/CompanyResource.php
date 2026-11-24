@@ -57,6 +57,7 @@ class CompanyResource extends Resource
                                             Forms\Components\TextInput::make('whatsapp_number')
                                                 ->label('رقم الواتساب المربوط (الرقم المستقبل)')
                                                 ->required()
+                                                ->unique(ignoreRecord: true)
                                                 ->helperText('الرقم الذي يستقبل رسائل العملاء (مثال: 967771314738)')
                                                 ->tel(),
 
@@ -349,9 +350,10 @@ class CompanyResource extends Resource
 
                 Tables\Actions\Action::make('open_portal')
                     ->label('بوابة الشركة')
+                    ->tooltip('دخول لوحة تحكم هذه المنشأة مباشرة كمسؤول')
                     ->icon('heroicon-o-arrow-top-right-on-square')
-                    ->color('gray')
-                    ->url(url('/company/login'), shouldOpenInNewTab: true),
+                    ->color('primary')
+                    ->url(fn (Company $record) => route('admin.switch-company', ['company' => $record->id]), shouldOpenInNewTab: true),
 
                 Tables\Actions\Action::make('toggle_status')
                     ->label(fn (Company $record) => $record->status === 'active' ? 'إيقاف مؤقت' : 'تفعيل')

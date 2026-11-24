@@ -26,17 +26,75 @@ class WahaWhatsAppService
     }
 
     /**
-     * Create a new session in WAHA.
+     * Create a new session in WAHA (attaching per-session webhook if WAHA_WEBHOOK_URL is configured).
      */
     public function createSession(string $session = 'default'): bool
     {
         try {
-            $response = $this->client()->post("{$this->baseUrl}/api/sessions", [
+            $payload = [
                 'name' => $session,
-            ]);
+            ];
+
+            $webhookUrl = env('WAHA_WEBHOOK_URL');
+            if (!empty($webhookUrl)) {
+                $payload['config'] = [
+                    'webhooks' => [
+                        [
+                            'url' => $webhookUrl,
+                            'events' => ['message'],
+                        ],
+                    ],
+                ];
+            }
+
+            $response = $this->client()->post("{$this->baseUrl}/api/sessions", $payload);
             return $response->successful();
         } catch (\Throwable $e) {
             Log::error("WAHA createSession failed: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * List all sessions in WAHA.
+     */
+    public function listSessions(): array
+    {
+        try {
+            $response = $this->client()->get("{$this->baseUrl}/api/sessions?all=true");
+            if ($response->successful()) {
+                return $response->json() ?? [];
+            }
+        } catch (\Throwable $e) {
+            Log::error("WAHA listSessions failed: " . $e->getMessage());
+        }
+
+        return [];
+    }
+
+    /**
+     * Update webhook configuration for an existing WAHA session.
+     */
+    public function updateSessionWebhook(string $session, string $webhookUrl, array $events = ['message']): bool
+    {
+        try {
+            $existing = $this->getSession($session);
+            $config = $existing['config'] ?? [];
+            $config['webhooks'] = [
+                [
+                    'url' => $webhookUrl,
+                    'events' => $events,
+                ],
+            ];
+
+            $response = $this->client()->put("{$this->baseUrl}/api/sessions/{$session}", [
+                'name' => $session,
+                'config' => $config,
+            ]);
+
+            return $response->successful();
+        } catch (\Throwable $e) {
+            Log::error("WAHA updateSessionWebhook failed for {$session}: " . $e->getMessage());
             return false;
         }
     }

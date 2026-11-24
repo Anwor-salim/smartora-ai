@@ -8,11 +8,26 @@ use Illuminate\Console\Command;
 
 class CheckCompanyWhatsAppCommand extends Command
 {
-    protected $signature = 'company:check-whatsapp {id?} {--sync}';
+    protected $signature = 'company:check-whatsapp {id?} {--sync} {--all : Check all companies and their WAHA sessions}';
     protected $description = 'Check company WhatsApp connection status and WAHA session status';
 
     public function handle(WahaWhatsAppService $waha): int
     {
+        if ($this->option('all')) {
+            $companies = Company::orderBy('id')->get();
+            if ($companies->isEmpty()) {
+                $this->error('No companies found.');
+                return 1;
+            }
+
+            foreach ($companies as $company) {
+                $this->inspectCompany($company, $waha);
+                $this->line(str_repeat('─', 60));
+            }
+
+            return 0;
+        }
+
         $id = $this->argument('id');
         $company = $id ? Company::find($id) : Company::latest()->first();
 
@@ -20,6 +35,13 @@ class CheckCompanyWhatsAppCommand extends Command
             $this->error('No company found.');
             return 1;
         }
+
+        $this->inspectCompany($company, $waha);
+        return 0;
+    }
+
+    protected function inspectCompany(Company $company, WahaWhatsAppService $waha): void
+    {
 
         $this->info("=== تفاصيل المنشأة ===");
         $this->line("المعرف (ID): {$company->id}");
@@ -77,7 +99,5 @@ class CheckCompanyWhatsAppCommand extends Command
         } else {
             $this->error("تعذر جلب تفاصيل الجلسة من WAHA للجلسة {$sessionName}");
         }
-
-        return 0;
     }
 }

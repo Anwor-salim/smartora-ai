@@ -47,9 +47,14 @@ class Company extends Model
 
     public function getWahaSessionName(): string
     {
+        if (!empty($this->settings['waha_session'])) {
+            return trim((string) $this->settings['waha_session']);
+        }
+
         if ($this->id === 4) {
             return 'default';
         }
+
         return 'company_' . $this->id;
     }
 

@@ -11,8 +11,9 @@ Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
 });
 
-// Inbound WhatsApp Webhook (For WhatsApp API & n8n)
+// Inbound WhatsApp Webhooks (n8n / API & Direct WAHA Auto-Reply)
 Route::post('/webhook/whatsapp', [WebhookController::class, 'whatsapp']);
+Route::post('/webhook/waha', [WebhookController::class, 'waha']);
 
 // Public read of active companies list for simulator / dropdown
 Route::get('/companies/public', function () {

@@ -66,11 +66,20 @@ class WebhookController extends Controller
             ], 400);
         }
 
+        $sessionName = $request->input('session') ?? ($payload['session'] ?? null);
+
         // Find company
         $company = null;
-        if (is_numeric($companyIdentifier) && strlen((string)$companyIdentifier) <= 6) {
+        if ($sessionName && str_starts_with($sessionName, 'company_')) {
+            $companyId = (int) str_replace('company_', '', $sessionName);
+            $company = Company::find($companyId);
+        } elseif ($sessionName === 'default') {
+            $company = Company::find(4);
+        }
+
+        if (!$company && is_numeric($companyIdentifier) && strlen((string)$companyIdentifier) <= 6) {
             $company = Company::find($companyIdentifier);
-        } elseif ($companyIdentifier) {
+        } elseif (!$company && $companyIdentifier) {
             $cleanNumber = preg_replace('/[^0-9]/', '', (string)$companyIdentifier);
             $company = Company::where('whatsapp_number', 'like', "%$cleanNumber%")
                 ->orWhere('phone', 'like', "%$cleanNumber%")

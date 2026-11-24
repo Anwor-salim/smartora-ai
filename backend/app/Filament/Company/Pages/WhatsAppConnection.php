@@ -58,23 +58,28 @@ class WhatsAppConnection extends Page
         }
 
         $this->supportPhone = $company->support_phone;
+        $session = $company->getWahaSessionName();
 
-        // Check live session with WAHA engine
-        if ($waha->isWorking()) {
-            $connectedPhone = $waha->getConnectedPhone() ?? $company->whatsapp_number;
-            $this->pushName = $waha->getPushName();
+        // Check live session with WAHA engine for this specific company session
+        if ($waha->isWorking($session)) {
+            $connectedPhone = $waha->getConnectedPhone($session) ?? $company->whatsapp_number;
+            $this->pushName = $waha->getPushName($session);
             $this->whatsappNumber = $connectedPhone;
             $this->connectionStatus = 'connected';
             $this->connectedAt = $company->whatsapp_connected_at?->format('d/m/Y H:i') ?? now()->format('d/m/Y H:i');
             $this->qrCodeUrl = null;
 
-            // Sync with company model if needed
-            if ($company->whatsapp_session_status !== 'connected' || $company->whatsapp_number !== $connectedPhone) {
-                $company->update([
-                    'whatsapp_session_status' => 'connected',
-                    'whatsapp_number' => $connectedPhone,
-                    'whatsapp_connected_at' => $company->whatsapp_connected_at ?? now(),
-                ]);
+            // Sync with company model if needed safely
+            if ($company->whatsapp_session_status !== 'connected' || ($connectedPhone && $company->whatsapp_number !== $connectedPhone)) {
+                try {
+                    $company->update([
+                        'whatsapp_session_status' => 'connected',
+                        'whatsapp_number' => $connectedPhone,
+                        'whatsapp_connected_at' => $company->whatsapp_connected_at ?? now(),
+                    ]);
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning("Could not sync whatsapp_number: " . $e->getMessage());
+                }
             }
         } else {
             $this->connectionStatus = 'disconnected';
@@ -83,10 +88,14 @@ class WhatsAppConnection extends Page
             $this->pushName = null;
 
             if ($company->whatsapp_session_status !== 'disconnected') {
-                $company->update(['whatsapp_session_status' => 'disconnected']);
+                try {
+                    $company->update(['whatsapp_session_status' => 'disconnected']);
+                } catch (\Throwable $e) {
+                    // Ignore safe error
+                }
             }
 
-            // Fetch real QR code
+            // Fetch real QR code for this company's session
             $this->loadQr($waha);
         }
     }
@@ -94,7 +103,13 @@ class WhatsAppConnection extends Page
     public function loadQr(?WahaWhatsAppService $waha = null): void
     {
         $waha = $waha ?? app(WahaWhatsAppService::class);
-        $qr = $waha->getQrCode();
+        $company = $this->getCompany();
+        if (! $company) {
+            return;
+        }
+
+        $session = $company->getWahaSessionName();
+        $qr = $waha->getQrCode($session);
 
         if ($qr) {
             $this->qrCodeUrl = $qr;
@@ -106,8 +121,14 @@ class WhatsAppConnection extends Page
 
     public function generateQr(): void
     {
+        $company = $this->getCompany();
+        if (! $company) {
+            return;
+        }
+
+        $session = $company->getWahaSessionName();
         $waha = app(WahaWhatsAppService::class);
-        $waha->restartSession();
+        $waha->restartSession($session);
         sleep(1);
         $this->loadQr($waha);
 
@@ -140,14 +161,21 @@ class WhatsAppConnection extends Page
     public function disconnectWhatsApp(): void
     {
         $company = $this->getCompany();
-        $waha = app(WahaWhatsAppService::class);
-        $waha->logoutSession();
+        if (! $company) {
+            return;
+        }
 
-        if ($company) {
+        $session = $company->getWahaSessionName();
+        $waha = app(WahaWhatsAppService::class);
+        $waha->logoutSession($session);
+
+        try {
             $company->update([
                 'whatsapp_session_status' => 'disconnected',
                 'whatsapp_connected_at' => null,
             ]);
+        } catch (\Throwable $e) {
+            // Ignore safe update error
         }
 
         $this->connectionStatus = 'disconnected';
@@ -170,15 +198,28 @@ class WhatsAppConnection extends Page
         if (! $company) return;
 
         $number = trim($this->whatsappNumber);
-        $company->update([
-            'whatsapp_number' => $number,
-            'support_phone' => trim($this->supportPhone),
-        ]);
+        try {
+            $company->update([
+                'whatsapp_number' => $number ?: null,
+                'support_phone' => trim($this->supportPhone) ?: null,
+            ]);
 
-        Notification::make()
-            ->title('تم حفظ وتحديث الأرقام بنجاح')
-            ->success()
-            ->send();
+            Notification::make()
+                ->title('تم حفظ وتحديث الأرقام بنجاح')
+                ->success()
+                ->send();
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            Notification::make()
+                ->title('رقم الواتساب هذا مسجل مسبقاً لشركة أخرى')
+                ->body('يرجى التأكد من إدخال رقم واتساب خاص بشركتك.')
+                ->danger()
+                ->send();
+        } catch (\Throwable $e) {
+            Notification::make()
+                ->title('تعذر حفظ البيانات: ' . $e->getMessage())
+                ->danger()
+                ->send();
+        }
     }
 
     public function sendTestMessage(): void
@@ -186,6 +227,7 @@ class WhatsAppConnection extends Page
         $company = $this->getCompany();
         if (! $company) return;
 
+        $session = $company->getWahaSessionName();
         $target = trim($this->testPhoneNumber ?: $this->whatsappNumber);
         if (empty($target)) {
             Notification::make()->title('يرجى تحديد رقم هاتف لإرسال الرسالة التجريبية إليه')->warning()->send();
@@ -198,8 +240,8 @@ class WhatsAppConnection extends Page
 
             // Also try sending real message via WAHA if working
             $waha = app(WahaWhatsAppService::class);
-            if ($waha->isWorking() && !empty($res['reply'])) {
-                $waha->sendText($target, $res['reply']);
+            if ($waha->isWorking($session) && !empty($res['reply'])) {
+                $waha->sendText($target, $res['reply'], $session);
             }
 
             Notification::make()

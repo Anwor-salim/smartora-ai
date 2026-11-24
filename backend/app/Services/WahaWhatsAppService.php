@@ -26,6 +26,40 @@ class WahaWhatsAppService
     }
 
     /**
+     * Create a new session in WAHA.
+     */
+    public function createSession(string $session = 'default'): bool
+    {
+        try {
+            $response = $this->client()->post("{$this->baseUrl}/api/sessions", [
+                'name' => $session,
+            ]);
+            return $response->successful();
+        } catch (\Throwable $e) {
+            Log::error("WAHA createSession failed: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Ensure session exists and is started.
+     */
+    public function ensureSession(string $session = 'default'): void
+    {
+        try {
+            $data = $this->getSession($session);
+            if (!$data) {
+                $this->createSession($session);
+                $this->startSession($session);
+            } elseif (in_array($data['status'] ?? '', ['STOPPED', 'FAILED', ''])) {
+                $this->startSession($session);
+            }
+        } catch (\Throwable $e) {
+            Log::error("WAHA ensureSession failed: " . $e->getMessage());
+        }
+    }
+
+    /**
      * Get details of a session (status, me, pushName, etc.)
      */
     public function getSession(string $session = 'default'): ?array
@@ -77,11 +111,12 @@ class WahaWhatsAppService
 
     /**
      * Get the real WhatsApp Web pairing QR code.
-     * Returns base64 image data URI: 'data:image/png;base64,...' or null if not in SCAN_QR_CODE.
+     * Returns base64 image data URI: 'data:image/png;base64,...' or QR server URL or null if already WORKING.
      */
     public function getQrCode(string $session = 'default'): ?string
     {
         try {
+            $this->ensureSession($session);
             $sessionData = $this->getSession($session);
             $status = $sessionData['status'] ?? '';
 
@@ -108,10 +143,10 @@ class WahaWhatsAppService
                 }
             }
 
-            // Fallback: check if raw string returned
+            // Fallback: check if raw string or value JSON returned
             $rawResponse = $this->client()->get("{$this->baseUrl}/api/{$session}/auth/qr?format=raw");
             if ($rawResponse->successful()) {
-                $raw = $rawResponse->json('qr') ?? $rawResponse->body();
+                $raw = $rawResponse->json('value') ?? $rawResponse->json('qr') ?? $rawResponse->body();
                 if ($raw && !str_contains($raw, 'error')) {
                     return "https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=" . urlencode($raw);
                 }
@@ -142,6 +177,10 @@ class WahaWhatsAppService
     public function restartSession(string $session = 'default'): bool
     {
         try {
+            $existing = $this->getSession($session);
+            if (!$existing) {
+                return $this->createSession($session) && $this->startSession($session);
+            }
             $response = $this->client()->post("{$this->baseUrl}/api/sessions/{$session}/restart");
             return $response->successful();
         } catch (\Throwable $e) {

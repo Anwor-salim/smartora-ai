@@ -43,34 +43,39 @@ class CheckCompanyWhatsAppCommand extends Command
         }
 
         // Check WAHA session via WahaWhatsAppService
-        $this->info("\n=== فحص جلسات WAHA WhatsApp ===");
-        $session = $waha->getSession();
+        $sessionName = $company->getWahaSessionName();
+        $this->info("\n=== فحص جلسات WAHA WhatsApp ({$sessionName}) ===");
+        $session = $waha->getSession($sessionName);
 
         if ($session) {
-            $name = $session['name'] ?? 'default';
+            $name = $session['name'] ?? $sessionName;
             $status = $session['status'] ?? 'unknown';
-            $phone = $waha->getConnectedPhone() ?? 'none';
-            $pushName = $waha->getPushName() ?? 'none';
+            $phone = $waha->getConnectedPhone($sessionName) ?? 'none';
+            $pushName = $waha->getPushName($sessionName) ?? 'none';
 
             $this->line("- الجلسة [{$name}]: الحالة = {$status}");
             $this->line("- الرقم المتصل = {$phone}");
             $this->line("- اسم الحساب = {$pushName}");
 
-            if ($waha->isWorking()) {
+            if ($waha->isWorking($sessionName)) {
                 $this->info("✅ واتساب متصل وجاهز للرد الآلي الفوري!");
                 if ($this->option('sync') || $company->whatsapp_session_status !== 'connected') {
-                    $company->update([
-                        'whatsapp_session_status' => 'connected',
-                        'whatsapp_number' => $phone,
-                        'whatsapp_connected_at' => $company->whatsapp_connected_at ?? now(),
-                    ]);
-                    $this->info("🔄 تم تحديث ومزامنة حالة المنشأة إلى 'متصل ونشط' بالرقم ({$phone}) بنجاح.");
+                    try {
+                        $company->update([
+                            'whatsapp_session_status' => 'connected',
+                            'whatsapp_number' => $phone,
+                            'whatsapp_connected_at' => $company->whatsapp_connected_at ?? now(),
+                        ]);
+                        $this->info("🔄 تم تحديث ومزامنة حالة المنشأة إلى 'متصل ونشط' بالرقم ({$phone}) بنجاح.");
+                    } catch (\Throwable $e) {
+                        $this->warn("⚠️ تعذر مزامنة الرقم: " . $e->getMessage());
+                    }
                 }
             } else {
                 $this->warn("⚠️ الجلسة ليست في حالة WORKING (الحالة الحالية: {$status})");
             }
         } else {
-            $this->error("تعذر جلب تفاصيل الجلسة من WAHA");
+            $this->error("تعذر جلب تفاصيل الجلسة من WAHA للجلسة {$sessionName}");
         }
 
         return 0;

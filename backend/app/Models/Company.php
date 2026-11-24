@@ -45,6 +45,15 @@ class Company extends Model
         return $this->whatsapp_session_status === 'connected';
     }
 
+    public function getWahaSessionName(): string
+    {
+        if ($this->id === 4) {
+            return 'default';
+        }
+        return 'company_' . $this->id;
+    }
+
+
     public function getOnboardingProgress(): array
     {
         $hasProfile = !empty($this->about_us) || !empty($this->working_hours) || !empty($this->address);

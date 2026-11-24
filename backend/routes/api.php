@@ -15,6 +15,12 @@ Route::prefix('auth')->group(function () {
 Route::post('/webhook/whatsapp', [WebhookController::class, 'whatsapp']);
 Route::post('/webhook/waha', [WebhookController::class, 'waha']);
 
+// Official Meta WhatsApp Cloud API Webhooks
+Route::get('/webhook/meta', [WebhookController::class, 'verifyMetaWebhook']);
+Route::post('/webhook/meta', [WebhookController::class, 'handleMetaWebhook']);
+Route::get('/webhook/meta/{company}', [WebhookController::class, 'verifyMetaWebhook']);
+Route::post('/webhook/meta/{company}', [WebhookController::class, 'handleMetaWebhook']);
+
 // Public read of active companies list for simulator / dropdown
 Route::get('/companies/public', function () {
     return response()->json([

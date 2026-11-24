@@ -17,6 +17,12 @@ class Company extends Model
         'services_offered',
         'phone',
         'whatsapp_number',
+        'whatsapp_provider',
+        'meta_phone_number_id',
+        'meta_waba_id',
+        'meta_access_token',
+        'meta_verify_token',
+        'meta_app_id',
         'support_phone',
         'email',
         'address',
@@ -42,7 +48,21 @@ class Company extends Model
 
     public function isWhatsAppConnected(): bool
     {
+        if ($this->whatsapp_provider === 'meta_cloud') {
+            return $this->isMetaConnected();
+        }
+
         return $this->whatsapp_session_status === 'connected';
+    }
+
+    public function isMetaConnected(): bool
+    {
+        return !empty($this->meta_phone_number_id) && !empty($this->meta_access_token);
+    }
+
+    public function getEffectiveVerifyToken(): string
+    {
+        return $this->meta_verify_token ?: ('smartora_meta_' . ($this->slug ?: $this->id));
     }
 
     public function getWahaSessionName(): string

@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Company;
 use App\Services\AiChatService;
+use App\Services\MetaWhatsAppService;
 use App\Services\WahaWhatsAppService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
 
 class WebhookController extends Controller
@@ -35,6 +37,125 @@ class WebhookController extends Controller
     public function waha(Request $request): JsonResponse
     {
         return $this->processInboundWebhook($request, autoSendViaWaha: true);
+    }
+
+    /**
+     * Meta WhatsApp Cloud API Webhook Verification (GET).
+     * Validates the hub.verify_token and echoes back hub.challenge to Meta.
+     */
+    public function verifyMetaWebhook(Request $request, ?string $company = null): Response
+    {
+        $mode = $request->query('hub_mode') ?? $request->query('hub.mode');
+        $token = $request->query('hub_verify_token') ?? $request->query('hub.verify_token');
+        $challenge = $request->query('hub_challenge') ?? $request->query('hub.challenge');
+
+        Log::info('Meta Webhook Verification received', [
+            'mode' => $mode,
+            'token' => $token,
+            'company' => $company,
+        ]);
+
+        if ($mode === 'subscribe') {
+            if ($company) {
+                $targetCompany = Company::where('id', $company)
+                    ->orWhere('slug', $company)
+                    ->first();
+
+                if ($targetCompany && ($token === $targetCompany->getEffectiveVerifyToken() || $token === $targetCompany->meta_verify_token)) {
+                    return response($challenge, 200)->header('Content-Type', 'text/plain');
+                }
+            }
+
+            // Global verification check
+            $globalToken = env('META_VERIFY_TOKEN', 'smartora_meta_global_2026');
+            if ($token === $globalToken || Company::where('meta_verify_token', $token)->exists()) {
+                return response($challenge, 200)->header('Content-Type', 'text/plain');
+            }
+        }
+
+        return response('Forbidden', 403);
+    }
+
+    /**
+     * Meta WhatsApp Cloud API Inbound Messages (POST).
+     * Receives message from Meta, finds tenant company, passes to AiChatService, and replies via Meta Graph API.
+     */
+    public function handleMetaWebhook(Request $request, ?string $company = null): JsonResponse
+    {
+        $payload = $request->all();
+
+        if (($payload['object'] ?? null) !== 'whatsapp_business_account') {
+            return response()->json(['status' => 'ignored'], 200);
+        }
+
+        $entries = $payload['entry'] ?? [];
+        foreach ($entries as $entry) {
+            $changes = $entry['changes'] ?? [];
+            foreach ($changes as $change) {
+                if (($change['field'] ?? null) !== 'messages') {
+                    continue;
+                }
+
+                $value = $change['value'] ?? [];
+                $metadata = $value['metadata'] ?? [];
+                $phoneNumberId = (string) ($metadata['phone_number_id'] ?? '');
+
+                if (empty($value['messages']) || !is_array($value['messages'])) {
+                    continue;
+                }
+
+                // Resolve company
+                $targetCompany = null;
+                if ($company) {
+                    $targetCompany = Company::where('id', $company)
+                        ->orWhere('slug', $company)
+                        ->first();
+                }
+
+                if (!$targetCompany && $phoneNumberId) {
+                    $targetCompany = Company::where('meta_phone_number_id', $phoneNumberId)->first();
+                }
+
+                if (!$targetCompany) {
+                    Log::warning('Meta WhatsApp message received but company not resolved', [
+                        'phone_number_id' => $phoneNumberId,
+                        'company_param' => $company,
+                    ]);
+                    continue;
+                }
+
+                $metaService = app(MetaWhatsAppService::class);
+
+                foreach ($value['messages'] as $msg) {
+                    $from = $msg['from'] ?? null;
+                    if (!$from) {
+                        continue;
+                    }
+
+                    $text = '';
+                    if (($msg['type'] ?? '') === 'text') {
+                        $text = $msg['text']['body'] ?? '';
+                    } elseif (($msg['type'] ?? '') === 'button') {
+                        $text = $msg['button']['text'] ?? '';
+                    } elseif (($msg['type'] ?? '') === 'interactive') {
+                        $text = $msg['interactive']['button_reply']['title']
+                            ?? ($msg['interactive']['list_reply']['title'] ?? '');
+                    }
+
+                    if (empty(trim($text))) {
+                        continue;
+                    }
+
+                    $result = $this->aiChatService->handleCustomerMessage($targetCompany, $from, trim($text));
+
+                    if (!empty($result['reply'])) {
+                        $metaService->sendText($targetCompany, $from, $result['reply']);
+                    }
+                }
+            }
+        }
+
+        return response()->json(['status' => 'success'], 200);
     }
 
     /**
@@ -135,7 +256,11 @@ class WebhookController extends Controller
 
         $sent = null;
         if ($autoSendViaWaha && !empty($result['reply'])) {
-            $sent = $this->wahaService->sendText($customerChatId, $result['reply'], $replySession);
+            if ($company->whatsapp_provider === 'meta_cloud' && $company->isMetaConnected()) {
+                $sent = app(MetaWhatsAppService::class)->sendText($company, $customerPhone, $result['reply']);
+            } else {
+                $sent = $this->wahaService->sendText($customerChatId, $result['reply'], $replySession);
+            }
         }
 
         $response = [

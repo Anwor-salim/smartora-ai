@@ -40,9 +40,17 @@ class ConversationResource extends Resource
         return $form
             ->schema([
                 Forms\Components\Card::make()->schema([
-                    Forms\Components\Grid::make(2)->schema([
+                    Forms\Components\Grid::make(3)->schema([
+                        Forms\Components\Select::make('channel')
+                            ->label('القناة')
+                            ->options([
+                                'whatsapp' => 'واتساب 🟢',
+                                'instagram' => 'انستقرام 📸',
+                            ])
+                            ->disabled(),
+
                         Forms\Components\TextInput::make('customer_phone')
-                            ->label('رقم هاتف العميل')
+                            ->label('رقم / معرّف العميل')
                             ->disabled(),
 
                         Forms\Components\TextInput::make('customer_name')
@@ -94,13 +102,20 @@ class ConversationResource extends Resource
     {
         return $table
             ->columns([
+                Tables\Columns\TextColumn::make('channel')
+                    ->label('القناة')
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state): string => $state === 'instagram' ? 'انستقرام 📸' : 'واتساب 🟢')
+                    ->color(fn (?string $state): string => $state === 'instagram' ? 'danger' : 'success'),
+
                 Tables\Columns\TextColumn::make('customer_phone')
-                    ->label('رقم هاتف العميل')
+                    ->label('رقم / معرّف العميل')
+                    ->formatStateUsing(fn (?string $state): string => str_starts_with((string) $state, 'ig:') ? substr((string) $state, 3) : (string) $state)
                     ->searchable()
                     ->sortable()
                     ->weight('bold')
                     ->copyable()
-                    ->icon('heroicon-m-phone'),
+                    ->icon('heroicon-m-identification'),
 
                 Tables\Columns\TextColumn::make('customer_name')
                     ->label('اسم العميل')
@@ -125,6 +140,14 @@ class ConversationResource extends Resource
                     ->color('info'),
             ])
             ->defaultSort('last_interaction_at', 'desc')
+            ->filters([
+                Tables\Filters\SelectFilter::make('channel')
+                    ->label('القناة')
+                    ->options([
+                        'whatsapp' => 'واتساب',
+                        'instagram' => 'انستقرام',
+                    ]),
+            ])
             ->actions([
                 Tables\Actions\ViewAction::make()->label('عرض المحادثة'),
             ])

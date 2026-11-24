@@ -23,6 +23,15 @@ class Company extends Model
         'meta_access_token',
         'meta_verify_token',
         'meta_app_id',
+        'instagram_account_id',
+        'instagram_username',
+        'instagram_access_token',
+        'instagram_verify_token',
+        'instagram_status',
+        'instagram_connected_at',
+        'instagram_comment_reply_enabled',
+        'instagram_comment_keywords',
+        'instagram_comment_public_reply',
         'support_phone',
         'email',
         'address',
@@ -43,6 +52,8 @@ class Company extends Model
         'subscription_starts_at' => 'datetime',
         'subscription_expires_at' => 'datetime',
         'whatsapp_connected_at' => 'datetime',
+        'instagram_connected_at' => 'datetime',
+        'instagram_comment_reply_enabled' => 'boolean',
         'settings' => 'array',
     ];
 
@@ -63,6 +74,18 @@ class Company extends Model
     public function getEffectiveVerifyToken(): string
     {
         return $this->meta_verify_token ?: ('smartora_meta_' . ($this->slug ?: $this->id));
+    }
+
+    public function isInstagramConnected(): bool
+    {
+        return $this->instagram_status === 'connected'
+            && !empty($this->instagram_account_id)
+            && !empty($this->instagram_access_token);
+    }
+
+    public function getEffectiveInstagramVerifyToken(): string
+    {
+        return $this->instagram_verify_token ?: ('smartora_ig_' . ($this->slug ?: $this->id));
     }
 
     public function getWahaSessionName(): string

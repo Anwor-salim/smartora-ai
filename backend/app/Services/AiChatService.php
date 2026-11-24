@@ -13,10 +13,15 @@ use Illuminate\Support\Facades\Log;
 class AiChatService
 {
     /**
-     * Process an incoming message for a company from a customer.
+     * Process an incoming message for a company from a customer on WhatsApp or Instagram.
      */
-    public function handleCustomerMessage(Company $company, string $customerPhone, string $incomingMessage): array
-    {
+    public function handleCustomerMessage(
+        Company $company,
+        string $customerPhone,
+        string $incomingMessage,
+        string $channel = 'whatsapp',
+        ?string $customerName = null
+    ): array {
         // 1. Check Subscription Status
         if (!$company->isSubscriptionActive()) {
             return [
@@ -28,25 +33,45 @@ class AiChatService
 
         // 2. Find or Create Conversation
         $isNewCustomer = false;
+        $defaultCustomerName = $customerName ?: (
+            $channel === 'instagram'
+                ? 'عميل انستقرام'
+                : 'عميل واتساب (' . substr($customerPhone, -4) . ')'
+        );
+
         $conversation = Conversation::firstOrCreate(
             [
                 'company_id' => $company->id,
                 'customer_phone' => $customerPhone,
             ],
             [
-                'customer_name' => 'عميل واتساب (' . substr($customerPhone, -4) . ')',
+                'channel' => $channel,
+                'customer_name' => $defaultCustomerName,
                 'status' => 'active',
             ]
         );
 
+        $convUpdates = [];
+        if (empty($conversation->channel)) {
+            $convUpdates['channel'] = $channel;
+        }
+        if ($customerName && ($conversation->customer_name === 'عميل انستقرام' || empty($conversation->customer_name))) {
+            $convUpdates['customer_name'] = $customerName;
+        }
+        if (!empty($convUpdates)) {
+            $conversation->update($convUpdates);
+        }
+
         if ($conversation->wasRecentlyCreated) {
             $isNewCustomer = true;
+            $channelLabel = $channel === 'instagram' ? 'انستقرام' : 'واتساب';
             SystemNotification::create([
                 'company_id' => $company->id,
-                'title' => 'عميل جديد يتواصل مع البوت',
-                'message' => "تواصل عميل جديد برقم ($customerPhone) مع شركة ({$company->name})",
+                'title' => "عميل جديد يتواصل عبر {$channelLabel}",
+                'message' => "تواصل عميل جديد ({$defaultCustomerName} - {$customerPhone}) مع شركة ({$company->name}) عبر {$channelLabel}",
                 'type' => 'new_customer',
                 'data' => [
+                    'channel' => $channel,
                     'phone' => $customerPhone,
                     'company_id' => $company->id,
                     'first_message' => $incomingMessage,
@@ -131,7 +156,8 @@ class AiChatService
         $openaiKey = env('OPENAI_API_KEY') ?: ($company->settings['openai_api_key'] ?? null);
 
         // Universal Domain-Agnostic System Prompt
-        $systemPrompt = $company->custom_system_prompt ?: "أنت المساعد الذكي والممثل الرسمي لخدمة عملاء منشأة ({$company->name}) عبر الواتساب.";
+        $channelArabic = ($conversation->channel ?? 'whatsapp') === 'instagram' ? 'انستقرام' : 'الواتساب';
+        $systemPrompt = $company->custom_system_prompt ?: "أنت المساعد الذكي والممثل الرسمي لخدمة عملاء منشأة ({$company->name}) عبر {$channelArabic}.";
         $systemPrompt .= "\n\n[إرشادات وقواعد الرد المعتمد]:";
         $systemPrompt .= "\n1. استند في إجابتك حصراً ودقة إلى بيانات ومعلومات ومستندات المنشأة المرفقة أدناه.";
         $systemPrompt .= "\n2. افهم مقصد العميل بدقة مهما كانت لهجته المحلية أو أسلوبه أو أخطاؤه الإملائية أو صياغته المختصرة.";

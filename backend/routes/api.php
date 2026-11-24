@@ -21,6 +21,12 @@ Route::post('/webhook/meta', [WebhookController::class, 'handleMetaWebhook']);
 Route::get('/webhook/meta/{company}', [WebhookController::class, 'verifyMetaWebhook']);
 Route::post('/webhook/meta/{company}', [WebhookController::class, 'handleMetaWebhook']);
 
+// Official Meta Instagram Messaging & Comments Webhooks
+Route::get('/webhook/instagram', [WebhookController::class, 'verifyInstagramWebhook']);
+Route::post('/webhook/instagram', [WebhookController::class, 'handleInstagramWebhook']);
+Route::get('/webhook/instagram/{company}', [WebhookController::class, 'verifyInstagramWebhook']);
+Route::post('/webhook/instagram/{company}', [WebhookController::class, 'handleInstagramWebhook']);
+
 // Public read of active companies list for simulator / dropdown
 Route::get('/companies/public', function () {
     return response()->json([

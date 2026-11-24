@@ -13,6 +13,7 @@ class Conversation extends Model
 
     protected $fillable = [
         'company_id',
+        'channel',
         'customer_phone',
         'customer_name',
         'last_message',

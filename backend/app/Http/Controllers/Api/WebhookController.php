@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Company;
 use App\Services\AiChatService;
+use App\Services\InstagramService;
 use App\Services\MetaWhatsAppService;
 use App\Services\WahaWhatsAppService;
 use Illuminate\Http\JsonResponse;
@@ -156,6 +157,217 @@ class WebhookController extends Controller
         }
 
         return response()->json(['status' => 'success'], 200);
+    }
+
+    /**
+     * Official Meta Instagram Webhook Verification (GET).
+     */
+    public function verifyInstagramWebhook(Request $request, ?string $company = null): Response
+    {
+        $mode = $request->query('hub_mode') ?? $request->query('hub.mode');
+        $token = $request->query('hub_verify_token') ?? $request->query('hub.verify_token');
+        $challenge = $request->query('hub_challenge') ?? $request->query('hub.challenge');
+
+        Log::info('Instagram Webhook Verification received', [
+            'mode' => $mode,
+            'token' => $token,
+            'company' => $company,
+        ]);
+
+        if ($mode === 'subscribe') {
+            if ($company) {
+                $targetCompany = Company::where('id', $company)
+                    ->orWhere('slug', $company)
+                    ->first();
+
+                if ($targetCompany && ($token === $targetCompany->getEffectiveInstagramVerifyToken() || $token === $targetCompany->instagram_verify_token)) {
+                    return response($challenge, 200)->header('Content-Type', 'text/plain');
+                }
+            }
+
+            $globalToken = env('META_INSTAGRAM_VERIFY_TOKEN', 'smartora_ig_global_2026');
+            if ($token === $globalToken || Company::where('instagram_verify_token', $token)->exists()) {
+                return response($challenge, 200)->header('Content-Type', 'text/plain');
+            }
+        }
+
+        return response('Forbidden', 403);
+    }
+
+    /**
+     * Official Meta Instagram Messaging & Comments Inbound Webhook (POST).
+     * Handles Direct Messages (DM), Story Replies, and optional Comment-to-DM automation.
+     */
+    public function handleInstagramWebhook(Request $request, ?string $company = null): JsonResponse
+    {
+        // Optional HMAC-SHA256 signature verification when META_INSTAGRAM_APP_SECRET is configured
+        $appSecret = env('META_INSTAGRAM_APP_SECRET');
+        $signatureHeader = $request->header('X-Hub-Signature-256');
+        if (!empty($appSecret) && !empty($signatureHeader)) {
+            $expected = 'sha256=' . hash_hmac('sha256', $request->getContent(), $appSecret);
+            if (!hash_equals($expected, $signatureHeader)) {
+                Log::warning('Instagram webhook signature mismatch rejected.');
+                return response()->json(['status' => 'forbidden'], 403);
+            }
+        }
+
+        $payload = $request->all();
+        if (($payload['object'] ?? null) !== 'instagram') {
+            return response()->json(['status' => 'ignored'], 200);
+        }
+
+        $instagramService = app(InstagramService::class);
+
+        foreach (($payload['entry'] ?? []) as $entry) {
+            $entryIgId = (string) ($entry['id'] ?? '');
+
+            // Branch A: Direct Messages & Story Replies
+            foreach (($entry['messaging'] ?? []) as $event) {
+                $message = $event['message'] ?? null;
+                if (!is_array($message)) {
+                    continue;
+                }
+
+                // Ignore echo messages sent by our own account or deleted messages
+                if (!empty($message['is_echo']) || !empty($message['is_deleted'])) {
+                    continue;
+                }
+
+                $text = trim((string) ($message['text'] ?? ''));
+                $senderId = (string) ($event['sender']['id'] ?? '');
+                $recipientId = (string) ($event['recipient']['id'] ?? $entryIgId);
+
+                if ($text === '' || $senderId === '') {
+                    continue;
+                }
+
+                $targetCompany = $this->resolveInstagramCompany($company, $recipientId, $entryIgId);
+                if (!$targetCompany) {
+                    Log::warning('Instagram DM received but target company not found.', [
+                        'recipient_id' => $recipientId,
+                        'entry_id' => $entryIgId,
+                        'company_param' => $company,
+                    ]);
+                    continue;
+                }
+
+                // Double safety check against self-reply echo loops
+                if ($targetCompany->instagram_account_id && $senderId === (string) $targetCompany->instagram_account_id) {
+                    continue;
+                }
+
+                $profile = $instagramService->getSenderProfile($targetCompany, $senderId);
+                $senderLabel = null;
+                if ($profile) {
+                    $senderLabel = !empty($profile['username'])
+                        ? '@' . $profile['username']
+                        : ($profile['name'] ?? null);
+                }
+
+                $result = $this->aiChatService->handleCustomerMessage(
+                    $targetCompany,
+                    'ig:' . $senderId,
+                    $text,
+                    'instagram',
+                    $senderLabel
+                );
+
+                if (!empty($result['reply']) && $targetCompany->isInstagramConnected()) {
+                    $instagramService->sendDirectMessage($targetCompany, $senderId, $result['reply']);
+                }
+            }
+
+            // Branch B: Comments Automation (Comment-to-DM)
+            foreach (($entry['changes'] ?? []) as $change) {
+                if (($change['field'] ?? null) !== 'comments') {
+                    continue;
+                }
+
+                $value = $change['value'] ?? [];
+                $commentId = (string) ($value['id'] ?? '');
+                $commentText = trim((string) ($value['text'] ?? ''));
+                $fromId = (string) ($value['from']['id'] ?? '');
+                $fromUsername = (string) ($value['from']['username'] ?? '');
+
+                if ($commentId === '' || $commentText === '') {
+                    continue;
+                }
+
+                $targetCompany = $this->resolveInstagramCompany($company, $entryIgId, $entryIgId);
+                if (!$targetCompany || !$targetCompany->instagram_comment_reply_enabled) {
+                    continue;
+                }
+
+                // Ignore comments authored by the business account itself
+                if (
+                    ($targetCompany->instagram_account_id && $fromId === (string) $targetCompany->instagram_account_id)
+                    || ($targetCompany->instagram_username && strcasecmp($fromUsername, ltrim($targetCompany->instagram_username, '@')) === 0)
+                ) {
+                    continue;
+                }
+
+                // Optional keyword trigger filter
+                $keywordsRaw = trim((string) ($targetCompany->instagram_comment_keywords ?? ''));
+                if ($keywordsRaw !== '') {
+                    $keywords = array_filter(array_map('trim', preg_split('/[,،\n]+/u', $keywordsRaw)));
+                    $matched = false;
+                    $lowerComment = mb_strtolower($commentText);
+                    foreach ($keywords as $kw) {
+                        if ($kw !== '' && mb_strpos($lowerComment, mb_strtolower($kw)) !== false) {
+                            $matched = true;
+                            break;
+                        }
+                    }
+                    if (!$matched) {
+                        continue;
+                    }
+                }
+
+                $customerKey = 'ig:' . ($fromId ?: $commentId);
+                $senderLabel = $fromUsername !== '' ? '@' . ltrim($fromUsername, '@') : null;
+
+                $result = $this->aiChatService->handleCustomerMessage(
+                    $targetCompany,
+                    $customerKey,
+                    $commentText,
+                    'instagram',
+                    $senderLabel
+                );
+
+                if (!empty($result['reply']) && $targetCompany->isInstagramConnected()) {
+                    $instagramService->sendPrivateReplyToComment($targetCompany, $commentId, $result['reply']);
+
+                    $publicReply = trim((string) ($targetCompany->instagram_comment_public_reply ?? ''));
+                    if ($publicReply !== '') {
+                        $instagramService->replyToComment($targetCompany, $commentId, $publicReply);
+                    }
+                }
+            }
+        }
+
+        return response()->json(['status' => 'success'], 200);
+    }
+
+    /**
+     * Resolve the exact tenant company owning an Instagram Business/Creator account.
+     */
+    protected function resolveInstagramCompany(?string $companyIdentifier, string $recipientId, string $entryId): ?Company
+    {
+        if ($companyIdentifier) {
+            $byParam = Company::where('id', $companyIdentifier)
+                ->orWhere('slug', $companyIdentifier)
+                ->first();
+            if ($byParam) {
+                return $byParam;
+            }
+        }
+
+        $ids = array_values(array_unique(array_filter([$recipientId, $entryId])));
+        if (!empty($ids)) {
+            return Company::whereIn('instagram_account_id', $ids)->first();
+        }
+
+        return null;
     }
 
     /**

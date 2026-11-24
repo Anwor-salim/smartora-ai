@@ -49,8 +49,34 @@ class WahaTestCommand extends Command
             $this->line("Status: " . $page->connectionStatus);
             $this->line("QR Url: " . ($page->qrCodeUrl ? substr($page->qrCodeUrl, 0, 40) . '...' : 'none'));
             $this->line("WhatsApp Number: " . $page->whatsappNumber);
-        }
+        } elseif ($action === 'users') {
+            $adminPanel = \Filament\Facades\Filament::getPanel('admin');
+            $companyPanel = \Filament\Facades\Filament::getPanel('company');
+            foreach (\App\Models\User::all() as $u) {
+                $canAdmin = $u->canAccessPanel($adminPanel) ? 'YES' : 'NO';
+                $canCompany = $u->canAccessPanel($companyPanel) ? 'YES' : 'NO';
+                $this->line("ID: {$u->id} | {$u->email} | Role: {$u->role} | Status: {$u->status} | Comp: {$u->company_id} | CanAdmin: {$canAdmin} | CanComp: {$canCompany}");
+            }
+        } elseif ($action === 'request') {
+            $user = \App\Models\User::find(3); // company_admin
+            auth()->login($user);
+            \Filament\Facades\Filament::setCurrentPanel(\Filament\Facades\Filament::getPanel('admin'));
+            $req = \Illuminate\Http\Request::create('/admin', 'GET');
+            $req->setLaravelSession(session()->driver());
 
+            $middleware = new \App\Http\Middleware\FilamentAuthenticate(app('Illuminate\Contracts\Auth\Factory'));
+            try {
+                $middleware->handle($req, function () {
+                    return response('Entered Admin Panel Successfully', 200);
+                });
+                $this->info("Allowed!");
+            } catch (\Illuminate\Auth\AuthenticationException $e) {
+                $this->info("Redirected to Login: " . $e->redirectTo($req));
+            } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+                $this->error("HTTP Exception: " . $e->getStatusCode());
+            }
+        }
         return 0;
     }
 }
+

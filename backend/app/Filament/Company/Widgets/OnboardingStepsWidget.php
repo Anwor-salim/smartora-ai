@@ -9,11 +9,11 @@ class OnboardingStepsWidget extends Widget
 {
     protected static string $view = 'filament.company.widgets.onboarding-steps-widget';
 
-    protected static ?int $sort = -1;
+    protected static ?int $sort = 1;
 
     protected int | string | array $columnSpan = 'full';
 
-    public function getCompany(): ?Company
+    public static function resolveCompany(): ?Company
     {
         $user = auth()->user();
         if (! $user) {
@@ -25,5 +25,22 @@ class OnboardingStepsWidget extends Widget
         }
 
         return $user->company ?? Company::first();
+    }
+
+    public static function canView(): bool
+    {
+        $company = static::resolveCompany();
+        if (! $company) {
+            return false;
+        }
+
+        $progress = $company->getOnboardingProgress();
+
+        return ! ($progress['is_fully_onboarded'] ?? false);
+    }
+
+    public function getCompany(): ?Company
+    {
+        return static::resolveCompany();
     }
 }

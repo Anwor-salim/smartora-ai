@@ -1,16 +1,11 @@
 <?php
 
+use App\Http\Controllers\LandingController;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/', function () {
-    if (auth()->check()) {
-        if (auth()->user()->isSuperAdmin()) {
-            return redirect('/admin');
-        }
-        return redirect('/company');
-    }
-    return redirect('/company/login');
-});
+Route::get('/', [LandingController::class, 'index'])->name('landing');
+Route::get('/register', [LandingController::class, 'registerPage'])->name('company.register');
+Route::post('/register', [LandingController::class, 'register'])->name('company.register.submit');
 
 $handleLocaleSwitch = function (string $locale) {
     if (in_array($locale, ['ar', 'en'])) {

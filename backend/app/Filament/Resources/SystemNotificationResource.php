@@ -10,6 +10,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Illuminate\Support\Str;
 
 class SystemNotificationResource extends Resource
 {
@@ -17,13 +18,14 @@ class SystemNotificationResource extends Resource
 
     protected static ?string $modelLabel = 'تنبيه نظام';
     protected static ?string $pluralModelLabel = 'التنبيهات الفورية';
-    protected static ?string $navigationLabel = 'تنبيهات النظام';
+    protected static ?string $navigationLabel = 'التنبيهات';
     protected static ?string $navigationIcon = 'heroicon-o-bell-alert';
     protected static ?int $navigationSort = 4;
 
     public static function getNavigationBadge(): ?string
     {
         $unreadCount = static::getModel()::where('is_read', false)->count();
+
         return $unreadCount > 0 ? (string) $unreadCount : null;
     }
 
@@ -36,7 +38,7 @@ class SystemNotificationResource extends Resource
     {
         return $form
             ->schema([
-                Forms\Components\Card::make()->schema([
+                Forms\Components\Section::make()->schema([
                     Forms\Components\Select::make('company_id')
                         ->label('المنشأة المتعلقة')
                         ->relationship('company', 'name')
@@ -89,14 +91,11 @@ class SystemNotificationResource extends Resource
                     }),
 
                 Tables\Columns\TextColumn::make('title')
-                    ->label('عنوان الإشعار')
+                    ->label('التنبيه')
                     ->weight('bold')
-                    ->searchable(),
-
-                Tables\Columns\TextColumn::make('message')
-                    ->label('نص الرسالة')
-                    ->limit(60)
-                    ->tooltip(fn ($state) => $state),
+                    ->searchable(['title', 'message'])
+                    ->description(fn (SystemNotification $record) => Str::limit((string) $record->message, 80))
+                    ->tooltip(fn (SystemNotification $record) => $record->message),
 
                 Tables\Columns\TextColumn::make('company.name')
                     ->label('المنشأة')
@@ -106,13 +105,14 @@ class SystemNotificationResource extends Resource
 
                 Tables\Columns\IconColumn::make('is_read')
                     ->label('مقروء')
-                    ->boolean(),
+                    ->boolean()
+                    ->alignCenter(),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('الوقت')
-                    ->dateTime('d/m/Y H:i')
+                    ->since()
                     ->sortable()
-                    ->description(fn (SystemNotification $record) => $record->created_at?->diffForHumans()),
+                    ->tooltip(fn (SystemNotification $record) => $record->created_at?->format('d/m/Y H:i')),
             ])
             ->defaultSort('created_at', 'desc')
             ->filters([
@@ -124,9 +124,10 @@ class SystemNotificationResource extends Resource
             ])
             ->actions([
                 Tables\Actions\Action::make('mark_as_read')
-                    ->label('تحديد كمقروء')
                     ->icon('heroicon-o-check')
                     ->color('success')
+                    ->iconButton()
+                    ->tooltip('تحديد كمقروء')
                     ->visible(fn (SystemNotification $record) => ! $record->is_read)
                     ->action(function (SystemNotification $record) {
                         $record->update(['is_read' => true]);
@@ -135,7 +136,9 @@ class SystemNotificationResource extends Resource
                             ->success()
                             ->send();
                     }),
-                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\DeleteAction::make()
+                    ->iconButton()
+                    ->tooltip('حذف'),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([

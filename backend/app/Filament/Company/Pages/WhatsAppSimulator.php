@@ -13,9 +13,9 @@ class WhatsAppSimulator extends Page
 
     protected static string $view = 'filament.company.pages.whatsapp-simulator';
 
-    protected static ?string $title = 'محاكي الواتساب الذكي (تجربة البوت)';
-    protected static ?string $navigationLabel = 'محاكي الواتساب';
-    protected static ?int $navigationSort = 4;
+    protected static ?string $title = 'محاكي الرد الذكي';
+    protected static ?string $navigationLabel = 'محاكي البوت';
+    protected static ?int $navigationSort = 6;
 
     public string $customerPhone = '96777000888';
     public string $inputMessage = '';

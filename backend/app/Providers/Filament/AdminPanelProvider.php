@@ -28,31 +28,27 @@ class AdminPanelProvider extends PanelProvider
             ->path('admin')
             ->login()
             ->brandName(fn () => app()->getLocale() === 'ar' ? 'سمارتورا AI - إدارة المنصة' : 'SmartOra AI - Admin Panel')
+            ->brandLogo(fn () => view('filament.components.brand-logo', ['panel' => 'admin']))
+            ->brandLogoHeight('2.25rem')
             ->colors([
                 'primary' => Color::Emerald,
+                'gray' => Color::Slate,
             ])
             ->font('Tajawal')
+            ->sidebarWidth('16rem')
             ->sidebarCollapsibleOnDesktop()
             ->maxContentWidth(\Filament\Support\Enums\MaxWidth::Full)
             ->renderHook(
-                \Filament\View\PanelsRenderHook::USER_MENU_BEFORE,
-                fn () => view('filament.components.language-switch'),
+                \Filament\View\PanelsRenderHook::HEAD_END,
+                fn () => view('filament.components.custom-theme'),
             )
-            ->userMenuItems([
-                \Filament\Navigation\MenuItem::make()
-                    ->label(fn () => app()->getLocale() === 'ar' ? 'English (EN)' : 'العربية (AR)')
-                    ->icon('heroicon-o-language')
-                    ->url(fn () => route('admin.switch-language', ['locale' => app()->getLocale() === 'ar' ? 'en' : 'ar'])),
-            ])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\\Filament\\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')
             ->pages([
                 Pages\Dashboard::class,
             ])
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
-            ->widgets([
-                Widgets\AccountWidget::class,
-            ])
+            ->widgets([])
             ->middleware([
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,

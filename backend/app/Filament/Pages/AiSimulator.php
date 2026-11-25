@@ -13,8 +13,8 @@ class AiSimulator extends Page
 
     protected static string $view = 'filament.pages.ai-simulator';
 
-    protected static ?string $title = 'محاكي الواتساب الذكي (AI Simulator)';
-    protected static ?string $navigationLabel = 'محاكي الواتساب';
+    protected static ?string $title = 'محاكي الرد الذكي';
+    protected static ?string $navigationLabel = 'محاكي البوت';
     protected static ?int $navigationSort = 5;
 
     public ?int $selectedCompanyId = null;

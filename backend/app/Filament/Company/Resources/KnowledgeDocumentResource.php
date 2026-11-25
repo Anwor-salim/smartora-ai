@@ -19,7 +19,8 @@ class KnowledgeDocumentResource extends Resource
     protected static ?string $model = KnowledgeDocument::class;
 
     protected static ?string $modelLabel = 'ملف معرفة وأسعار';
-    protected static ?string $navigationLabel = 'ملفات المنتجات والأسعار (Excel / PDF)';
+    protected static ?string $pluralModelLabel = 'قاعدة المعرفة والأسعار';
+    protected static ?string $navigationLabel = 'قاعدة المعرفة';
     protected static ?string $navigationIcon = 'heroicon-o-document-chart-bar';
     protected static ?int $navigationSort = 2;
 
@@ -81,13 +82,19 @@ class KnowledgeDocumentResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            ->defaultSort('created_at', 'desc')
             ->columns([
                 Tables\Columns\TextColumn::make('title')
-                    ->label('اسم الملف / الوصف')
+                    ->label('الملف')
                     ->searchable()
                     ->sortable()
                     ->weight('bold')
-                    ->description(fn (KnowledgeDocument $record) => $record->file_path),
+                    ->description(function (KnowledgeDocument $record): string {
+                        $filename = basename((string) $record->file_path);
+                        $size = $record->file_size ? round($record->file_size / 1024, 1) . ' KB' : '';
+
+                        return $size ? "{$filename} · {$size}" : $filename;
+                    }),
 
                 Tables\Columns\TextColumn::make('file_type')
                     ->label('النوع')
@@ -100,18 +107,19 @@ class KnowledgeDocumentResource extends Resource
                     }),
 
                 Tables\Columns\TextColumn::make('total_items')
-                    ->label('الأصناف المستخرجة')
+                    ->label('الأصناف')
                     ->badge()
                     ->color('primary')
-                    ->formatStateUsing(fn ($state) => ($state ?? 0) . ' صنف / سجل'),
+                    ->alignCenter()
+                    ->formatStateUsing(fn ($state) => ($state ?? 0) . ' صنف'),
 
                 Tables\Columns\TextColumn::make('status')
-                    ->label('حالة المعالجة')
+                    ->label('الحالة')
                     ->badge()
                     ->formatStateUsing(fn (string $state): string => match ($state) {
-                        'ready' => 'جاهز للاستخدام',
+                        'ready' => 'جاهز',
                         'processing' => 'قيد المعالجة',
-                        'error' => 'تعذر التحليل',
+                        'error' => 'خطأ بالتحليل',
                         default => $state,
                     })
                     ->color(fn (string $state): string => match ($state) {
@@ -121,17 +129,11 @@ class KnowledgeDocumentResource extends Resource
                         default => 'gray',
                     }),
 
-                Tables\Columns\TextColumn::make('file_size')
-                    ->label('حجم الملف')
-                    ->formatStateUsing(function ($state) {
-                        if (! $state) return '-';
-                        return round($state / 1024, 1) . ' KB';
-                    }),
-
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('تاريخ الرفع')
-                    ->dateTime('d/m/Y H:i')
-                    ->sortable(),
+                    ->since()
+                    ->sortable()
+                    ->tooltip(fn (KnowledgeDocument $record) => $record->created_at?->format('d/m/Y H:i')),
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('file_type')
@@ -144,40 +146,47 @@ class KnowledgeDocumentResource extends Resource
             ])
             ->actions([
                 Tables\Actions\Action::make('preview_data')
-                    ->label('معاينة المحتوى المستخرج')
+                    ->label('معاينة')
+                    ->button()
+                    ->size('xs')
                     ->icon('heroicon-o-eye')
                     ->color('info')
                     ->modalHeading(fn (KnowledgeDocument $record) => 'المحتوى المستخرج من: ' . $record->title)
                     ->modalContent(fn (KnowledgeDocument $record) => view('filament.components.document-preview', ['document' => $record])),
 
-                Tables\Actions\Action::make('reparse')
-                    ->label('إعادة التحليل')
-                    ->icon('heroicon-o-arrow-path')
-                    ->color('warning')
-                    ->requiresConfirmation()
-                    ->action(function (KnowledgeDocument $record) {
-                        try {
-                            $fullPath = Storage::disk('local')->path($record->file_path);
-                            $ext = pathinfo($record->file_path, PATHINFO_EXTENSION);
-                            $parser = app(DocumentParserService::class);
-                            $parsed = $parser->parseFile($fullPath, $ext);
+                Tables\Actions\ActionGroup::make([
+                    Tables\Actions\Action::make('reparse')
+                        ->label('إعادة التحليل')
+                        ->icon('heroicon-o-arrow-path')
+                        ->color('warning')
+                        ->requiresConfirmation()
+                        ->action(function (KnowledgeDocument $record) {
+                            try {
+                                $fullPath = Storage::disk('local')->path($record->file_path);
+                                $ext = pathinfo($record->file_path, PATHINFO_EXTENSION);
+                                $parser = app(DocumentParserService::class);
+                                $parsed = $parser->parseFile($fullPath, $ext);
 
-                            $record->update([
-                                'extracted_text' => $parsed['text'],
-                                'extracted_data' => $parsed['data'],
-                                'total_items' => $parsed['total_items'] ?? count($parsed['data']),
-                                'status' => 'ready',
-                                'error_message' => null,
-                            ]);
+                                $record->update([
+                                    'extracted_text' => $parsed['text'],
+                                    'extracted_data' => $parsed['data'],
+                                    'total_items' => $parsed['total_items'] ?? count($parsed['data']),
+                                    'status' => 'ready',
+                                    'error_message' => null,
+                                ]);
 
-                            Notification::make()->title('تمت إعادة تحليل الملف بنجاح!')->success()->send();
-                        } catch (\Throwable $e) {
-                            $record->update(['status' => 'error', 'error_message' => $e->getMessage()]);
-                            Notification::make()->title('فشل تحليل الملف: ' . $e->getMessage())->danger()->send();
-                        }
-                    }),
+                                Notification::make()->title('تمت إعادة تحليل الملف بنجاح!')->success()->send();
+                            } catch (\Throwable $e) {
+                                $record->update(['status' => 'error', 'error_message' => $e->getMessage()]);
+                                Notification::make()->title('فشل تحليل الملف: ' . $e->getMessage())->danger()->send();
+                            }
+                        }),
 
-                Tables\Actions\DeleteAction::make(),
+                    Tables\Actions\DeleteAction::make()
+                        ->label('حذف الملف'),
+                ])
+                    ->icon('heroicon-m-ellipsis-vertical')
+                    ->tooltip('خيارات'),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([

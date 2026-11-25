@@ -17,9 +17,9 @@ class UserResource extends Resource
 
     protected static ?string $modelLabel = 'مستخدم';
     protected static ?string $pluralModelLabel = 'المستخدمون والمدراء';
-    protected static ?string $navigationLabel = 'إدارة المستخدمين';
+    protected static ?string $navigationLabel = 'المستخدمون';
     protected static ?string $navigationIcon = 'heroicon-o-users';
-    protected static ?int $navigationSort = 2;
+    protected static ?int $navigationSort = 3;
 
     public static function form(Form $form): Form
     {
@@ -84,14 +84,12 @@ class UserResource extends Resource
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('name')
-                    ->label('الاسم')
-                    ->searchable()
+                    ->label('المستخدم')
+                    ->searchable(['name', 'email'])
                     ->sortable()
-                    ->weight('bold'),
-
-                Tables\Columns\TextColumn::make('email')
-                    ->label('البريد الإلكتروني')
-                    ->searchable()
+                    ->weight('bold')
+                    ->description(fn (User $record) => $record->email)
+                    ->copyableState(fn (User $record) => $record->email)
                     ->copyable(),
 
                 Tables\Columns\TextColumn::make('role')
@@ -109,19 +107,20 @@ class UserResource extends Resource
                     }),
 
                 Tables\Columns\TextColumn::make('company.name')
-                    ->label('الشركة التابع لها')
+                    ->label('المنشأة')
                     ->placeholder('النظام العام')
                     ->sortable()
                     ->searchable(),
-
-                Tables\Columns\TextColumn::make('phone')
-                    ->label('الهاتف'),
 
                 Tables\Columns\TextColumn::make('status')
                     ->label('الحالة')
                     ->badge()
                     ->color(fn (string $state): string => $state === 'active' ? 'success' : 'danger')
                     ->formatStateUsing(fn (string $state): string => $state === 'active' ? 'نشط' : 'معطل'),
+
+                Tables\Columns\TextColumn::make('phone')
+                    ->label('الهاتف')
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('تاريخ الإنشاء')
@@ -145,8 +144,8 @@ class UserResource extends Resource
                     ]),
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\EditAction::make()->iconButton()->tooltip('تعديل'),
+                Tables\Actions\DeleteAction::make()->iconButton()->tooltip('حذف'),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([

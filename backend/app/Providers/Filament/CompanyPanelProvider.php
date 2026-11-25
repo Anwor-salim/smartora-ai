@@ -34,15 +34,19 @@ class CompanyPanelProvider extends PanelProvider
                 }
                 return app()->getLocale() === 'ar' ? 'سمارتورا AI - بوابة الشركات' : 'SmartOra AI - Company Portal';
             })
+            ->brandLogo(fn () => view('filament.components.brand-logo', ['panel' => 'company']))
+            ->brandLogoHeight('2.25rem')
             ->colors([
                 'primary' => Color::Sky,
+                'gray' => Color::Slate,
             ])
             ->font('Tajawal')
+            ->sidebarWidth('16rem')
             ->sidebarCollapsibleOnDesktop()
             ->maxContentWidth(\Filament\Support\Enums\MaxWidth::Full)
             ->renderHook(
-                \Filament\View\PanelsRenderHook::USER_MENU_BEFORE,
-                fn () => view('filament.components.language-switch'),
+                \Filament\View\PanelsRenderHook::HEAD_END,
+                fn () => view('filament.components.custom-theme'),
             )
             ->renderHook(
                 \Filament\View\PanelsRenderHook::PAGE_START,
@@ -54,10 +58,6 @@ class CompanyPanelProvider extends PanelProvider
                     ->icon('heroicon-o-shield-check')
                     ->url('/admin/companies')
                     ->visible(fn () => auth()->user()?->isSuperAdmin() ?? false),
-                \Filament\Navigation\MenuItem::make()
-                    ->label(fn () => app()->getLocale() === 'ar' ? 'English (EN)' : 'العربية (AR)')
-                    ->icon('heroicon-o-language')
-                    ->url(fn () => route('company.switch-language', ['locale' => app()->getLocale() === 'ar' ? 'en' : 'ar'])),
             ])
             ->discoverResources(in: app_path('Filament/Company/Resources'), for: 'App\\Filament\\Company\\Resources')
             ->discoverPages(in: app_path('Filament/Company/Pages'), for: 'App\\Filament\\Company\\Pages')
@@ -65,9 +65,7 @@ class CompanyPanelProvider extends PanelProvider
                 Pages\Dashboard::class,
             ])
             ->discoverWidgets(in: app_path('Filament/Company/Widgets'), for: 'App\\Filament\\Company\\Widgets')
-            ->widgets([
-                Widgets\AccountWidget::class,
-            ])
+            ->widgets([])
             ->middleware([
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,

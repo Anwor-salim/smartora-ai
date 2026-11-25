@@ -39,62 +39,31 @@ class ConversationResource extends Resource
     {
         return $form
             ->schema([
-                Forms\Components\Card::make()->schema([
-                    Forms\Components\Grid::make(3)->schema([
-                        Forms\Components\Select::make('channel')
-                            ->label('القناة')
-                            ->options([
-                                'whatsapp' => 'واتساب 🟢',
-                                'instagram' => 'انستقرام 📸',
-                            ])
-                            ->disabled(),
-
-                        Forms\Components\TextInput::make('customer_phone')
-                            ->label('رقم / معرّف العميل')
-                            ->disabled(),
-
-                        Forms\Components\TextInput::make('customer_name')
-                            ->label('اسم العميل')
-                            ->disabled(),
-                    ]),
-
-                    Forms\Components\Textarea::make('last_message')
-                        ->label('آخر رسالة متبادلة')
-                        ->disabled()
-                        ->rows(2)
-                        ->columnSpanFull(),
-                ]),
-
-                Forms\Components\Section::make('سجل الرسائل الكامل مع البوت')
+                Forms\Components\Section::make('بيانات العميل والقناة')
+                    ->compact()
                     ->schema([
-                        Forms\Components\Repeater::make('messages')
-                            ->relationship('messages')
-                            ->schema([
-                                Forms\Components\Grid::make(3)->schema([
-                                    Forms\Components\Select::make('direction')
-                                        ->label('المرسل')
-                                        ->options([
-                                            'inbound' => 'رسالة العميل 👤',
-                                            'outbound' => 'رد البوت الذكي 🤖',
-                                        ])
-                                        ->disabled(),
+                        Forms\Components\Grid::make(3)->schema([
+                            Forms\Components\Select::make('channel')
+                                ->label('القناة')
+                                ->options([
+                                    'whatsapp' => 'واتساب',
+                                    'instagram' => 'انستقرام',
+                                ])
+                                ->disabled(),
 
-                                    Forms\Components\TextInput::make('created_at')
-                                        ->label('التاريخ والوقت')
-                                        ->disabled(),
+                            Forms\Components\TextInput::make('customer_phone')
+                                ->label('رقم / معرّف العميل')
+                                ->disabled(),
 
-                                    Forms\Components\Textarea::make('content')
-                                        ->label('نص الرسالة')
-                                        ->rows(2)
-                                        ->disabled()
-                                        ->columnSpanFull(),
-                                ]),
-                            ])
-                            ->addable(false)
-                            ->deletable(false)
-                            ->reorderable(false)
-                            ->columnSpanFull(),
+                            Forms\Components\TextInput::make('customer_name')
+                                ->label('اسم العميل')
+                                ->disabled(),
+                        ]),
                     ]),
+
+                Forms\Components\ViewField::make('messages_thread')
+                    ->view('filament.components.conversation-messages')
+                    ->columnSpanFull(),
             ]);
     }
 
@@ -105,39 +74,46 @@ class ConversationResource extends Resource
                 Tables\Columns\TextColumn::make('channel')
                     ->label('القناة')
                     ->badge()
-                    ->formatStateUsing(fn (?string $state): string => $state === 'instagram' ? 'انستقرام 📸' : 'واتساب 🟢')
+                    ->formatStateUsing(fn (?string $state): string => $state === 'instagram' ? 'انستقرام' : 'واتساب')
                     ->color(fn (?string $state): string => $state === 'instagram' ? 'danger' : 'success'),
 
                 Tables\Columns\TextColumn::make('customer_phone')
-                    ->label('رقم / معرّف العميل')
-                    ->formatStateUsing(fn (?string $state): string => str_starts_with((string) $state, 'ig:') ? substr((string) $state, 3) : (string) $state)
-                    ->searchable()
-                    ->sortable()
-                    ->weight('bold')
-                    ->copyable()
-                    ->icon('heroicon-m-identification'),
+                    ->label('العميل')
+                    ->formatStateUsing(function (?string $state, Conversation $record): string {
+                        $cleanId = str_starts_with((string) $state, 'ig:') ? substr((string) $state, 3) : (string) $state;
 
-                Tables\Columns\TextColumn::make('customer_name')
-                    ->label('اسم العميل')
-                    ->placeholder('مجهول')
-                    ->searchable(),
+                        return $record->customer_name ?: $cleanId;
+                    })
+                    ->description(function (Conversation $record): ?string {
+                        if (! $record->customer_name) {
+                            return null;
+                        }
+
+                        return str_starts_with((string) $record->customer_phone, 'ig:')
+                            ? substr((string) $record->customer_phone, 3)
+                            : (string) $record->customer_phone;
+                    })
+                    ->searchable(['customer_phone', 'customer_name'])
+                    ->weight('bold')
+                    ->copyable(),
 
                 Tables\Columns\TextColumn::make('last_message')
                     ->label('آخر رسالة')
-                    ->limit(50)
+                    ->limit(38)
                     ->tooltip(fn ($state) => $state),
-
-                Tables\Columns\TextColumn::make('last_interaction_at')
-                    ->label('آخر تواصل')
-                    ->dateTime('d/m/Y H:i')
-                    ->sortable()
-                    ->description(fn (Conversation $record) => $record->last_interaction_at?->diffForHumans()),
 
                 Tables\Columns\TextColumn::make('messages_count')
                     ->counts('messages')
                     ->label('الرسائل')
                     ->badge()
-                    ->color('info'),
+                    ->color('info')
+                    ->alignCenter(),
+
+                Tables\Columns\TextColumn::make('last_interaction_at')
+                    ->label('آخر تواصل')
+                    ->since()
+                    ->sortable()
+                    ->tooltip(fn (Conversation $record) => $record->last_interaction_at?->format('d/m/Y H:i')),
             ])
             ->defaultSort('last_interaction_at', 'desc')
             ->filters([
@@ -149,7 +125,9 @@ class ConversationResource extends Resource
                     ]),
             ])
             ->actions([
-                Tables\Actions\ViewAction::make()->label('عرض المحادثة'),
+                Tables\Actions\ViewAction::make()
+                    ->iconButton()
+                    ->tooltip('عرض المحادثة'),
             ])
             ->bulkActions([]);
     }

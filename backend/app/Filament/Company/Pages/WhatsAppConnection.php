@@ -17,8 +17,8 @@ class WhatsAppConnection extends Page
 
     protected static string $view = 'filament.company.pages.whats-app-connection';
 
-    protected static ?string $title = 'ربط الواتساب وأتمتة الردود (WhatsApp Connection)';
-    protected static ?string $navigationLabel = 'ربط الواتساب والباركود (QR & API)';
+    protected static ?string $title = 'ربط الواتساب';
+    protected static ?string $navigationLabel = 'ربط الواتساب';
     protected static ?int $navigationSort = 3;
 
     public string $whatsappProvider = 'waha'; // 'waha' or 'meta_cloud'

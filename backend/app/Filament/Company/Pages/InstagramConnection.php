@@ -14,8 +14,8 @@ class InstagramConnection extends Page
 
     protected static string $view = 'filament.company.pages.instagram-connection';
 
-    protected static ?string $title = 'ربط حساب انستقرام والرد الآلي (Instagram DM & Comments)';
-    protected static ?string $navigationLabel = 'ربط انستقرام (Instagram DM)';
+    protected static ?string $title = 'ربط انستقرام';
+    protected static ?string $navigationLabel = 'ربط انستقرام';
     protected static ?int $navigationSort = 4;
 
     public ?string $instagramAccountId = '';

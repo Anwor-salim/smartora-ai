@@ -18,8 +18,8 @@ class CompanySettings extends Page implements HasForms
 
     protected static string $view = 'filament.company.pages.company-settings';
 
-    protected static ?string $title = 'الملف التعريفي وإعدادات المنشأة';
-    protected static ?string $navigationLabel = 'التعريف بالمنشأة والخدمات';
+    protected static ?string $title = 'بيانات المنشأة وإعدادات الذكاء';
+    protected static ?string $navigationLabel = 'بيانات المنشأة';
     protected static ?int $navigationSort = 1;
 
     public ?array $data = [];
@@ -149,11 +149,11 @@ class CompanySettings extends Page implements HasForms
                                     ->columnSpanFull(),
 
                                 Forms\Components\TextInput::make('gemini_api_key')
-                                    ->label('مفتاح Google Gemini API Key (لتفعيل ذكاء Gemini التوليدي)')
+                                    ->label('مفتاح Google Gemini API Key (اختياري)')
                                     ->password()
                                     ->revealable()
                                     ->placeholder('AIzaSy...')
-                                    ->helperText('مفتاح الربط من Google AI Studio، عند إدخاله سيتولى نموذج Gemini 1.5 Flash صياغة كافة الردود بالذكاء التوليدي.')
+                                    ->helperText('مفتاح الربط من Google AI Studio، عند إدخاله يتولى Google Gemini صياغة الردود لهذه المنشأة.')
                                     ->columnSpanFull(),
                             ]),
                     ])

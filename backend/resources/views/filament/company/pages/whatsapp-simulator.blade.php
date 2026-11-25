@@ -72,7 +72,10 @@
 
         <!-- WhatsApp Chat Window -->
         <div class="lg:col-span-2">
-            <div class="rounded-2xl border border-gray-200 dark:border-gray-800 shadow-xl overflow-hidden flex flex-col h-[650px] bg-[#efeae2] dark:bg-[#0b141a]">
+            <div class="rounded-2xl border border-slate-200 dark:border-slate-800 shadow-lg overflow-hidden flex flex-col h-[calc(100vh-13.5rem)] min-h-[440px] max-h-[620px] bg-[#efeae2] dark:bg-[#0b141a]"
+                 x-data
+                 x-init="$nextTick(() => { const el = $refs.chatBox; if (el) el.scrollTop = el.scrollHeight; })"
+                 x-effect="const count = {{ count($chatHistory) }}; $nextTick(() => { const el = $refs.chatBox; if (el) el.scrollTop = el.scrollHeight; })">
                 <!-- Header -->
                 <div class="bg-[#005d4b] dark:bg-[#202c33] text-white px-4 py-3 flex items-center justify-between shadow">
                     <div class="flex items-center gap-3">
@@ -94,7 +97,7 @@
                 </div>
 
                 <!-- Messages -->
-                <div class="flex-1 p-4 overflow-y-auto space-y-3">
+                <div x-ref="chatBox" class="flex-1 p-4 overflow-y-auto space-y-3 smartora-scroll">
                     @forelse($chatHistory as $item)
                         @if($item['sender'] === 'user')
                             <div class="flex justify-end">

@@ -94,4 +94,67 @@ Route::get('/company/instagram/oauth/callback', function (\Illuminate\Http\Reque
     return redirect('/company/instagram-connection');
 })->middleware(['web', 'auth'])->name('company.instagram.oauth.callback');
 
+Route::get('/company/messenger/oauth/callback', function (\Illuminate\Http\Request $request) {
+    $error = $request->query('error_description') ?? $request->query('error');
+    if ($error) {
+        \Filament\Notifications\Notification::make()
+            ->title('تعذر إتمام ربط ماسنجر فيسبوك')
+            ->body((string) $error)
+            ->danger()
+            ->send();
+        return redirect('/company/messenger-connection');
+    }
+
+    $code = (string) $request->query('code', '');
+    $state = (string) $request->query('state', '');
+
+    if ($code === '' || $state === '') {
+        return redirect('/company/messenger-connection');
+    }
+
+    try {
+        $decoded = json_decode(\Illuminate\Support\Facades\Crypt::decryptString($state), true);
+        $companyId = $decoded['company_id'] ?? null;
+    } catch (\Throwable $e) {
+        \Filament\Notifications\Notification::make()
+            ->title('انتهت صلاحية جلسة الربط، يرجى المحاولة مجدداً')
+            ->danger()
+            ->send();
+        return redirect('/company/messenger-connection');
+    }
+
+    $user = auth()->user();
+    $company = $companyId ? \App\Models\Company::find($companyId) : ($user?->company);
+    if (!$company || ($user && !$user->isSuperAdmin() && $user->company_id !== $company->id)) {
+        abort(403);
+    }
+
+    $messengerService = app(\App\Services\MessengerService::class);
+    $res = $messengerService->exchangeOAuthCode($code);
+
+    if (!empty($res['success'])) {
+        $company->update([
+            'messenger_page_id' => $res['page_id'] ?? $company->messenger_page_id,
+            'messenger_page_name' => $res['page_name'] ?? $company->messenger_page_name,
+            'messenger_access_token' => $res['access_token'],
+            'messenger_status' => 'connected',
+            'messenger_connected_at' => now(),
+        ]);
+
+        \Filament\Notifications\Notification::make()
+            ->title('تم ربط صفحة ماسنجر فيسبوك بنجاح! 🎉')
+            ->body('الصفحة المرتبطة: ' . ($res['page_name'] ?? $res['page_id']))
+            ->success()
+            ->send();
+    } else {
+        \Filament\Notifications\Notification::make()
+            ->title('فشل تبديل رمز الدخول مع فيسبوك')
+            ->body($res['error'] ?? 'يرجى المحاولة مرة أخرى.')
+            ->danger()
+            ->send();
+    }
+
+    return redirect('/company/messenger-connection');
+})->middleware(['web', 'auth'])->name('company.messenger.oauth.callback');
+
 

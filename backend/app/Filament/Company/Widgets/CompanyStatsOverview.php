@@ -39,8 +39,11 @@ class CompanyStatsOverview extends BaseWidget
 
         $waConnected = $company->isWhatsAppConnected();
         $igConnected = $company->isInstagramConnected();
-        $channelsCount = ($waConnected ? 1 : 0) + ($igConnected ? 1 : 0);
-        $channelsDesc = 'واتساب: ' . ($waConnected ? 'متصل' : 'غير مربوط') . ' · انستقرام: ' . ($igConnected ? 'متصل' : 'غير مربوط');
+        $fbConnected = $company->isMessengerConnected();
+        $channelsCount = ($waConnected ? 1 : 0) + ($igConnected ? 1 : 0) + ($fbConnected ? 1 : 0);
+        $channelsDesc = 'واتساب: ' . ($waConnected ? 'متصل' : 'غير مربوط')
+            . ' · انستقرام: ' . ($igConnected ? 'متصل' : 'غير مربوط')
+            . ' · ماسنجر: ' . ($fbConnected ? 'متصل' : 'غير مربوط');
 
         $readyDocsCount = KnowledgeDocument::where('company_id', $company->id)->where('status', 'ready')->count();
         $totalItems = (int) KnowledgeDocument::where('company_id', $company->id)->where('status', 'ready')->sum('total_items');
@@ -65,10 +68,10 @@ class CompanyStatsOverview extends BaseWidget
                 ->descriptionIcon($isActive ? 'heroicon-m-check-circle' : 'heroicon-m-x-circle')
                 ->color($isActive ? 'success' : 'danger'),
 
-            Stat::make('القنوات المتصلة', "{$channelsCount} / 2")
+            Stat::make('القنوات المتصلة', "{$channelsCount} / 3")
                 ->description($channelsDesc)
                 ->descriptionIcon('heroicon-m-signal')
-                ->color($channelsCount === 2 ? 'success' : ($channelsCount === 1 ? 'info' : 'warning'))
+                ->color($channelsCount === 3 ? 'success' : ($channelsCount >= 1 ? 'info' : 'warning'))
                 ->url('/company/whats-app-connection'),
 
             Stat::make('قاعدة المعرفة', "{$readyDocsCount} ملف")

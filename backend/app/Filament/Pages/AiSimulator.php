@@ -3,6 +3,7 @@
 namespace App\Filament\Pages;
 
 use App\Models\Company;
+use App\Models\Conversation;
 use App\Services\AiChatService;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
@@ -42,9 +43,22 @@ class AiSimulator extends Page
         $this->chatHistory = [];
         $company = $this->getSelectedCompany();
         if ($company) {
-            $greeting = $company->settings['greeting_message'] 
+            $conversation = Conversation::where('company_id', $company->id)
+                ->where('customer_phone', $this->customerPhone)
+                ->first();
+
+            if ($conversation) {
+                $conversation->messages()->delete();
+                $conversation->resetContext();
+                $conversation->update([
+                    'last_message' => null,
+                    'last_interaction_at' => null,
+                ]);
+            }
+
+            $greeting = $company->settings['greeting_message']
                 ?? "مرحباً بك في {$company->name}! كيف يمكنني مساعدتك اليوم؟";
-            
+
             $this->chatHistory[] = [
                 'sender' => 'bot',
                 'message' => $greeting,

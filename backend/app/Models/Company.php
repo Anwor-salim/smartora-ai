@@ -32,6 +32,15 @@ class Company extends Model
         'instagram_comment_reply_enabled',
         'instagram_comment_keywords',
         'instagram_comment_public_reply',
+        'messenger_page_id',
+        'messenger_page_name',
+        'messenger_access_token',
+        'messenger_verify_token',
+        'messenger_status',
+        'messenger_connected_at',
+        'messenger_comment_reply_enabled',
+        'messenger_comment_keywords',
+        'messenger_comment_public_reply',
         'support_phone',
         'email',
         'address',
@@ -54,6 +63,8 @@ class Company extends Model
         'whatsapp_connected_at' => 'datetime',
         'instagram_connected_at' => 'datetime',
         'instagram_comment_reply_enabled' => 'boolean',
+        'messenger_connected_at' => 'datetime',
+        'messenger_comment_reply_enabled' => 'boolean',
         'settings' => 'array',
     ];
 
@@ -86,6 +97,18 @@ class Company extends Model
     public function getEffectiveInstagramVerifyToken(): string
     {
         return $this->instagram_verify_token ?: ('smartora_ig_' . ($this->slug ?: $this->id));
+    }
+
+    public function isMessengerConnected(): bool
+    {
+        return $this->messenger_status === 'connected'
+            && !empty($this->messenger_page_id)
+            && !empty($this->messenger_access_token);
+    }
+
+    public function getEffectiveMessengerVerifyToken(): string
+    {
+        return $this->messenger_verify_token ?: ('smartora_fb_' . ($this->slug ?: $this->id));
     }
 
     public function getWahaSessionName(): string

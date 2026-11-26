@@ -37,6 +37,7 @@
                         $isActive = $company->isSubscriptionActive();
                         $waConnected = $company->isWhatsAppConnected();
                         $igConnected = $company->isInstagramConnected();
+                        $fbConnected = $company->isMessengerConnected();
                         $daysLeft = $company->subscription_expires_at
                             ? (int) now()->diffInDays($company->subscription_expires_at, false)
                             : null;
@@ -76,6 +77,12 @@
                                 <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-pink-50 text-pink-700 dark:bg-pink-950/50 dark:text-pink-300">
                                     <span class="w-1.5 h-1.5 rounded-full bg-pink-500"></span>
                                     انستقرام
+                                </span>
+                            @endif
+                            @if($fbConnected)
+                                <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                                    ماسنجر
                                 </span>
                             @endif
                         </div>
@@ -126,15 +133,18 @@
                     @forelse($conversations as $conv)
                         @php
                             $isIg = $conv->channel === 'instagram';
-                            $customerDisplay = str_starts_with((string) $conv->customer_phone, 'ig:')
-                                ? substr((string) $conv->customer_phone, 3)
-                                : $conv->customer_phone;
+                            $isFb = $conv->channel === 'messenger';
+                            $badgeClasses = $isIg
+                                ? 'bg-pink-50 text-pink-700 dark:bg-pink-950/60 dark:text-pink-300'
+                                : ($isFb ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300');
+                            $channelName = $isIg ? 'انستقرام' : ($isFb ? 'ماسنجر' : 'واتساب');
+                            $customerDisplay = (string) preg_replace('/^(ig|fb):/', '', (string) $conv->customer_phone);
                         @endphp
                         <a href="/admin/conversations/{{ $conv->id }}" class="block px-4 py-2.5 hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition">
                             <div class="flex items-center justify-between gap-2">
                                 <div class="flex items-center gap-1.5 min-w-0">
-                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 {{ $isIg ? 'bg-pink-50 text-pink-700 dark:bg-pink-950/60 dark:text-pink-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300' }}">
-                                        {{ $isIg ? 'انستقرام' : 'واتساب' }}
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 {{ $badgeClasses }}">
+                                        {{ $channelName }}
                                     </span>
                                     <span class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
                                         {{ $conv->customer_name ?: $customerDisplay }}

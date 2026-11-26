@@ -38,6 +38,11 @@ class AdminStatsOverview extends BaseWidget
             ->whereNotNull('instagram_access_token')
             ->count();
 
+        $fbConnected = Company::where('messenger_status', 'connected')
+            ->whereNotNull('messenger_page_id')
+            ->whereNotNull('messenger_access_token')
+            ->count();
+
         $totalConversations = Conversation::count();
         $todayConversations = Conversation::whereDate('last_interaction_at', today())->count();
 
@@ -58,7 +63,7 @@ class AdminStatsOverview extends BaseWidget
                 ->url('/admin/companies'),
 
             Stat::make('القنوات المتصلة', $waConnected)
-                ->description("انستقرام متصل: {$igConnected} شركة")
+                ->description("انستقرام: {$igConnected} · ماسنجر: {$fbConnected}")
                 ->descriptionIcon('heroicon-m-signal')
                 ->color('success'),
 

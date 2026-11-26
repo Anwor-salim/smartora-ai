@@ -4,6 +4,7 @@
         $conversations = $this->getRecentConversations();
         $waConnected = $company?->isWhatsAppConnected() ?? false;
         $igConnected = $company?->isInstagramConnected() ?? false;
+        $fbConnected = $company?->isMessengerConnected() ?? false;
         $docsCount = $company ? $company->documents()->where('status', 'ready')->count() : 0;
     @endphp
 
@@ -17,7 +18,7 @@
                     </span>
                     <div>
                         <h3 class="text-sm font-bold text-slate-900 dark:text-white">أحدث محادثات العملاء</h3>
-                        <p class="text-[11px] text-slate-500 dark:text-slate-400">آخر تفاعلات الزبائن مع البوت عبر واتساب وانستقرام</p>
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400">آخر تفاعلات الزبائن مع البوت عبر واتساب وانستقرام وماسنجر</p>
                     </div>
                 </div>
 
@@ -30,14 +31,17 @@
                 @forelse($conversations as $conv)
                     @php
                         $isIg = $conv->channel === 'instagram';
-                        $customerDisplay = str_starts_with((string) $conv->customer_phone, 'ig:')
-                            ? substr((string) $conv->customer_phone, 3)
-                            : $conv->customer_phone;
+                        $isFb = $conv->channel === 'messenger';
+                        $badgeClasses = $isIg
+                            ? 'bg-pink-50 text-pink-700 dark:bg-pink-950/60 dark:text-pink-300'
+                            : ($isFb ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300');
+                        $channelName = $isIg ? 'انستقرام' : ($isFb ? 'ماسنجر' : 'واتساب');
+                        $customerDisplay = (string) preg_replace('/^(ig|fb):/', '', (string) $conv->customer_phone);
                     @endphp
                     <a href="/company/conversations/{{ $conv->id }}" class="px-5 py-3 flex items-center justify-between gap-4 hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition">
                         <div class="flex items-center gap-3 min-w-0 flex-1">
-                            <span class="px-2 py-1 rounded-lg text-[11px] font-bold shrink-0 {{ $isIg ? 'bg-pink-50 text-pink-700 dark:bg-pink-950/60 dark:text-pink-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300' }}">
-                                {{ $isIg ? 'انستقرام' : 'واتساب' }}
+                            <span class="px-2 py-1 rounded-lg text-[11px] font-bold shrink-0 {{ $badgeClasses }}">
+                                {{ $channelName }}
                             </span>
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-center gap-2">
@@ -114,6 +118,20 @@
                             </div>
                         </div>
                         <span class="text-[11px] font-semibold text-pink-600 dark:text-pink-400 shrink-0">إدارة</span>
+                    </a>
+
+                    <!-- Facebook Messenger -->
+                    <a href="/company/messenger-connection" class="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-200/80 dark:border-slate-800 hover:border-blue-400 transition bg-slate-50/50 dark:bg-slate-800/40">
+                        <div class="flex items-center gap-2.5 min-w-0">
+                            <span class="w-2.5 h-2.5 rounded-full shrink-0 {{ $fbConnected ? 'bg-blue-500' : 'bg-slate-300 dark:bg-slate-600' }}"></span>
+                            <div class="min-w-0">
+                                <div class="text-xs font-bold text-slate-900 dark:text-white">ماسنجر فيسبوك</div>
+                                <div class="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                                    {{ $fbConnected && $company?->messenger_page_name ? $company->messenger_page_name : ($fbConnected ? 'متصل' : 'غير مربوط') }}
+                                </div>
+                            </div>
+                        </div>
+                        <span class="text-[11px] font-semibold text-blue-600 dark:text-blue-400 shrink-0">إدارة</span>
                     </a>
 
                     <!-- Knowledge Base -->

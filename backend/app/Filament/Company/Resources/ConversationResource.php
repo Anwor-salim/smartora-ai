@@ -6,6 +6,7 @@ use App\Filament\Company\Resources\ConversationResource\Pages;
 use App\Models\Conversation;
 use Filament\Forms;
 use Filament\Forms\Form;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
@@ -19,7 +20,7 @@ class ConversationResource extends Resource
     protected static ?string $pluralModelLabel = 'محادثات العملاء';
     protected static ?string $navigationLabel = 'محادثات العملاء';
     protected static ?string $navigationIcon = 'heroicon-o-chat-bubble-left-right';
-    protected static ?int $navigationSort = 5;
+    protected static ?int $navigationSort = 6;
 
     public static function getEloquentQuery(): Builder
     {
@@ -48,6 +49,7 @@ class ConversationResource extends Resource
                                 ->options([
                                     'whatsapp' => 'واتساب',
                                     'instagram' => 'انستقرام',
+                                    'messenger' => 'ماسنجر',
                                 ])
                                 ->disabled(),
 
@@ -74,13 +76,21 @@ class ConversationResource extends Resource
                 Tables\Columns\TextColumn::make('channel')
                     ->label('القناة')
                     ->badge()
-                    ->formatStateUsing(fn (?string $state): string => $state === 'instagram' ? 'انستقرام' : 'واتساب')
-                    ->color(fn (?string $state): string => $state === 'instagram' ? 'danger' : 'success'),
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'instagram' => 'انستقرام',
+                        'messenger' => 'ماسنجر',
+                        default => 'واتساب',
+                    })
+                    ->color(fn (?string $state): string => match ($state) {
+                        'instagram' => 'danger',
+                        'messenger' => 'info',
+                        default => 'success',
+                    }),
 
                 Tables\Columns\TextColumn::make('customer_phone')
                     ->label('العميل')
                     ->formatStateUsing(function (?string $state, Conversation $record): string {
-                        $cleanId = str_starts_with((string) $state, 'ig:') ? substr((string) $state, 3) : (string) $state;
+                        $cleanId = (string) preg_replace('/^(ig|fb):/', '', (string) $state);
 
                         return $record->customer_name ?: $cleanId;
                     })
@@ -89,9 +99,7 @@ class ConversationResource extends Resource
                             return null;
                         }
 
-                        return str_starts_with((string) $record->customer_phone, 'ig:')
-                            ? substr((string) $record->customer_phone, 3)
-                            : (string) $record->customer_phone;
+                        return (string) preg_replace('/^(ig|fb):/', '', (string) $record->customer_phone);
                     })
                     ->searchable(['customer_phone', 'customer_name'])
                     ->weight('bold')
@@ -101,6 +109,28 @@ class ConversationResource extends Resource
                     ->label('آخر رسالة')
                     ->limit(38)
                     ->tooltip(fn ($state) => $state),
+
+                Tables\Columns\TextColumn::make('conversation_state')
+                    ->label('مرحلة المحادثة')
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'booking' => 'طلب حجز',
+                        'inquiring' => 'استفسار',
+                        'human_handoff' => 'تحويل لموظف',
+                        default => 'تصفح',
+                    })
+                    ->color(fn (?string $state): string => match ($state) {
+                        'booking' => 'warning',
+                        'inquiring' => 'info',
+                        'human_handoff' => 'danger',
+                        default => 'gray',
+                    }),
+
+                Tables\Columns\TextColumn::make('ai_paused')
+                    ->label('الرد الآلي')
+                    ->badge()
+                    ->formatStateUsing(fn (bool $state): string => $state ? 'متوقف' : 'نشط')
+                    ->color(fn (bool $state): string => $state ? 'danger' : 'success'),
 
                 Tables\Columns\TextColumn::make('messages_count')
                     ->counts('messages')
@@ -122,12 +152,48 @@ class ConversationResource extends Resource
                     ->options([
                         'whatsapp' => 'واتساب',
                         'instagram' => 'انستقرام',
+                        'messenger' => 'ماسنجر',
                     ]),
             ])
             ->actions([
                 Tables\Actions\ViewAction::make()
                     ->iconButton()
                     ->tooltip('عرض المحادثة'),
+
+                Tables\Actions\Action::make('toggleAiPause')
+                    ->iconButton()
+                    ->icon(fn (Conversation $record): string => $record->ai_paused ? 'heroicon-o-play' : 'heroicon-o-pause')
+                    ->color(fn (Conversation $record): string => $record->ai_paused ? 'success' : 'warning')
+                    ->tooltip(fn (Conversation $record): string => $record->ai_paused ? 'تفعيل البوت' : 'إيقاف البوت')
+                    ->action(function (Conversation $record): void {
+                        $newPaused = !$record->ai_paused;
+                        $record->update([
+                            'ai_paused' => $newPaused,
+                            'ai_paused_at' => $newPaused ? now() : null,
+                        ]);
+
+                        Notification::make()
+                            ->title($newPaused ? 'تم إيقاف البوت لهذه المحادثة' : 'تم إعادة تفعيل البوت للمحادثة')
+                            ->success()
+                            ->send();
+                    }),
+
+                Tables\Actions\Action::make('resetContext')
+                    ->iconButton()
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('gray')
+                    ->tooltip('تصفير السياق')
+                    ->requiresConfirmation()
+                    ->modalHeading('تصفير ذاكرة وسياق المحادثة')
+                    ->modalDescription('سيتم مسح ملخص المحادثة والحالة المؤقتة لبدء تنسيق جديد مع العميل.')
+                    ->action(function (Conversation $record): void {
+                        $record->resetContext();
+
+                        Notification::make()
+                            ->title('تم تصفير سياق المحادثة بنجاح')
+                            ->success()
+                            ->send();
+                    }),
             ])
             ->bulkActions([]);
     }

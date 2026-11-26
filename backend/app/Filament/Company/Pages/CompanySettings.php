@@ -42,6 +42,10 @@ class CompanySettings extends Page implements HasForms
                 'greeting_message' => $company->settings['greeting_message'] ?? '',
                 'custom_system_prompt' => $company->custom_system_prompt,
                 'gemini_api_key' => $company->settings['gemini_api_key'] ?? '',
+                'response_tone' => $company->settings['response_tone'] ?? 'professional_friendly',
+                'memory_messages_limit' => (int) ($company->settings['memory_messages_limit'] ?? 12),
+                'timezone' => $company->settings['timezone'] ?? 'Asia/Riyadh',
+                'auto_pause_on_handoff' => (bool) ($company->settings['auto_pause_on_handoff'] ?? false),
             ]);
         }
     }
@@ -148,6 +152,49 @@ class CompanySettings extends Page implements HasForms
                                     ->rows(4)
                                     ->columnSpanFull(),
 
+                                Forms\Components\Grid::make(3)->schema([
+                                    Forms\Components\Select::make('response_tone')
+                                        ->label('نبرة وأسلوب الرد')
+                                        ->options([
+                                            'professional_friendly' => 'ودود ومهني (موصى به)',
+                                            'formal' => 'رسمي ومباشر',
+                                            'concise' => 'مختصر وسريع',
+                                        ])
+                                        ->default('professional_friendly')
+                                        ->required(),
+
+                                    Forms\Components\Select::make('memory_messages_limit')
+                                        ->label('عمق ذاكرة المحادثة')
+                                        ->options([
+                                            6 => 'آخر 6 رسائل',
+                                            10 => 'آخر 10 رسائل',
+                                            12 => 'آخر 12 رسالة (موصى به)',
+                                            16 => 'آخر 16 رسالة',
+                                            20 => 'آخر 20 رسالة',
+                                        ])
+                                        ->default(12)
+                                        ->required(),
+
+                                    Forms\Components\Select::make('timezone')
+                                        ->label('المنطقة الزمنية للمنشأة')
+                                        ->options([
+                                            'Asia/Riyadh' => 'الرياض (Asia/Riyadh)',
+                                            'Asia/Aden' => 'عدن / صنعاء (Asia/Aden)',
+                                            'Asia/Dubai' => 'دبي (Asia/Dubai)',
+                                            'Asia/Kuwait' => 'الكويت (Asia/Kuwait)',
+                                            'Africa/Cairo' => 'القاهرة (Africa/Cairo)',
+                                            'UTC' => 'التوقيت العالمي (UTC)',
+                                        ])
+                                        ->default('Asia/Riyadh')
+                                        ->required(),
+                                ]),
+
+                                Forms\Components\Toggle::make('auto_pause_on_handoff')
+                                    ->label('إيقاف البوت تلقائياً عند طلب التحدث مع موظف بشري')
+                                    ->helperText('عند التفعيل، يتوقف البوت عن الرد التلقائي بمجرد أن يطلب العميل موظفاً بشرياً حتى تقوم بإعادة تفعيله.')
+                                    ->default(false)
+                                    ->columnSpanFull(),
+
                                 Forms\Components\TextInput::make('gemini_api_key')
                                     ->label('مفتاح Google Gemini API Key (اختياري)')
                                     ->password()
@@ -175,6 +222,10 @@ class CompanySettings extends Page implements HasForms
         $settings = $company->settings ?? [];
         $settings['greeting_message'] = $formState['greeting_message'] ?? '';
         $settings['gemini_api_key'] = trim($formState['gemini_api_key'] ?? '');
+        $settings['response_tone'] = $formState['response_tone'] ?? 'professional_friendly';
+        $settings['memory_messages_limit'] = (int) ($formState['memory_messages_limit'] ?? 12);
+        $settings['timezone'] = $formState['timezone'] ?? 'Asia/Riyadh';
+        $settings['auto_pause_on_handoff'] = (bool) ($formState['auto_pause_on_handoff'] ?? false);
 
         $company->update([
             'name' => $formState['name'],

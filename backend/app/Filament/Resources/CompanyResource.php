@@ -228,11 +228,15 @@ class CompanyResource extends Resource
                             ? ($record->whatsapp_provider === 'meta_cloud' ? 'واتساب متصل (Meta)' : 'واتساب متصل (QR)')
                             : ($record->whatsapp_session_status === 'scanning' ? 'بانتظار المسح' : 'واتساب غير مربوط');
 
+                        $channels = [$wa];
                         if ($record->isInstagramConnected()) {
-                            return $wa . ' · انستقرام ✓';
+                            $channels[] = 'انستقرام ✓';
+                        }
+                        if ($record->isMessengerConnected()) {
+                            $channels[] = 'ماسنجر ✓';
                         }
 
-                        return $wa;
+                        return implode(' · ', $channels);
                     }),
 
                 Tables\Columns\TextColumn::make('status')

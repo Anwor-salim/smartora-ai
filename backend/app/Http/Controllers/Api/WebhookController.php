@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Company;
 use App\Services\AiChatService;
 use App\Services\InstagramService;
+use App\Services\MessengerService;
 use App\Services\MetaWhatsAppService;
 use App\Services\WahaWhatsAppService;
 use Illuminate\Http\JsonResponse;
@@ -365,6 +366,216 @@ class WebhookController extends Controller
         $ids = array_values(array_unique(array_filter([$recipientId, $entryId])));
         if (!empty($ids)) {
             return Company::whereIn('instagram_account_id', $ids)->first();
+        }
+
+        return null;
+    }
+
+    /**
+     * Official Meta Facebook Messenger Webhook Verification (GET).
+     */
+    public function verifyMessengerWebhook(Request $request, ?string $company = null): Response
+    {
+        $mode = $request->query('hub_mode') ?? $request->query('hub.mode');
+        $token = $request->query('hub_verify_token') ?? $request->query('hub.verify_token');
+        $challenge = $request->query('hub_challenge') ?? $request->query('hub.challenge');
+
+        Log::info('Messenger Webhook Verification received', [
+            'mode' => $mode,
+            'token' => $token,
+            'company' => $company,
+        ]);
+
+        if ($mode === 'subscribe') {
+            if ($company) {
+                $targetCompany = Company::where('id', $company)
+                    ->orWhere('slug', $company)
+                    ->first();
+
+                if ($targetCompany && ($token === $targetCompany->getEffectiveMessengerVerifyToken() || $token === $targetCompany->messenger_verify_token)) {
+                    return response($challenge, 200)->header('Content-Type', 'text/plain');
+                }
+            }
+
+            $globalToken = env('META_MESSENGER_VERIFY_TOKEN', 'smartora_fb_global_2026');
+            if ($token === $globalToken || Company::where('messenger_verify_token', $token)->exists()) {
+                return response($challenge, 200)->header('Content-Type', 'text/plain');
+            }
+        }
+
+        return response('Forbidden', 403);
+    }
+
+    /**
+     * Official Meta Facebook Messenger & Page Comments Inbound Webhook (POST).
+     * Handles Direct Messages (DM), Postbacks, and optional Page Comment-to-DM automation.
+     */
+    public function handleMessengerWebhook(Request $request, ?string $company = null): JsonResponse
+    {
+        // HMAC-SHA256 signature verification when META_MESSENGER_APP_SECRET is configured
+        $appSecret = env('META_MESSENGER_APP_SECRET');
+        $signatureHeader = $request->header('X-Hub-Signature-256');
+        if (!empty($appSecret)) {
+            $expected = 'sha256=' . hash_hmac('sha256', $request->getContent(), $appSecret);
+            if (empty($signatureHeader) || !hash_equals($expected, $signatureHeader)) {
+                Log::warning('Messenger webhook signature mismatch or missing header rejected.');
+                return response()->json(['status' => 'forbidden'], 403);
+            }
+        }
+
+        $payload = $request->all();
+        if (($payload['object'] ?? null) !== 'page') {
+            return response()->json(['status' => 'ignored'], 200);
+        }
+
+        $messengerService = app(MessengerService::class);
+
+        foreach (($payload['entry'] ?? []) as $entry) {
+            $entryPageId = (string) ($entry['id'] ?? '');
+
+            // Branch A: Direct Messages & Postbacks
+            foreach (($entry['messaging'] ?? []) as $event) {
+                $text = '';
+
+                if (isset($event['message']) && is_array($event['message'])) {
+                    $message = $event['message'];
+                    if (!empty($message['is_echo']) || !empty($message['is_deleted'])) {
+                        continue;
+                    }
+                    $text = trim((string) ($message['text'] ?? ($message['quick_reply']['payload'] ?? '')));
+                } elseif (isset($event['postback']) && is_array($event['postback'])) {
+                    $text = trim((string) ($event['postback']['title'] ?? ($event['postback']['payload'] ?? '')));
+                } else {
+                    continue;
+                }
+
+                $senderId = (string) ($event['sender']['id'] ?? '');
+                $recipientId = (string) ($event['recipient']['id'] ?? $entryPageId);
+
+                if ($text === '' || $senderId === '') {
+                    continue;
+                }
+
+                $targetCompany = $this->resolveMessengerCompany($company, $recipientId, $entryPageId);
+                if (!$targetCompany) {
+                    Log::warning('Messenger event received but target company not found.', [
+                        'recipient_id' => $recipientId,
+                        'entry_id' => $entryPageId,
+                        'company_param' => $company,
+                    ]);
+                    continue;
+                }
+
+                // Safety check against self-reply echo loops
+                if ($targetCompany->messenger_page_id && $senderId === (string) $targetCompany->messenger_page_id) {
+                    continue;
+                }
+
+                $profile = $messengerService->getSenderProfile($targetCompany, $senderId);
+                $senderLabel = $profile['name'] ?? null;
+
+                $result = $this->aiChatService->handleCustomerMessage(
+                    $targetCompany,
+                    'fb:' . $senderId,
+                    $text,
+                    'messenger',
+                    $senderLabel
+                );
+
+                if (!empty($result['reply']) && $targetCompany->isMessengerConnected()) {
+                    $messengerService->sendDirectMessage($targetCompany, $senderId, $result['reply']);
+                }
+            }
+
+            // Branch B: Facebook Page Feed Comments Automation (Comment-to-DM)
+            foreach (($entry['changes'] ?? []) as $change) {
+                if (($change['field'] ?? null) !== 'feed') {
+                    continue;
+                }
+
+                $value = $change['value'] ?? [];
+                if (($value['item'] ?? null) !== 'comment' || ($value['verb'] ?? null) !== 'add') {
+                    continue;
+                }
+
+                $commentId = (string) ($value['comment_id'] ?? '');
+                $commentText = trim((string) ($value['message'] ?? ''));
+                $fromId = (string) ($value['from']['id'] ?? '');
+                $fromName = trim((string) ($value['from']['name'] ?? ''));
+
+                if ($commentId === '' || $commentText === '') {
+                    continue;
+                }
+
+                $targetCompany = $this->resolveMessengerCompany($company, $entryPageId, $entryPageId);
+                if (!$targetCompany || !$targetCompany->messenger_comment_reply_enabled) {
+                    continue;
+                }
+
+                // Ignore comments authored by the Page itself
+                if ($targetCompany->messenger_page_id && $fromId === (string) $targetCompany->messenger_page_id) {
+                    continue;
+                }
+
+                // Optional keyword trigger filter
+                $keywordsRaw = trim((string) ($targetCompany->messenger_comment_keywords ?? ''));
+                if ($keywordsRaw !== '') {
+                    $keywords = array_filter(array_map('trim', preg_split('/[,،\n]+/u', $keywordsRaw)));
+                    $matched = false;
+                    $lowerComment = mb_strtolower($commentText);
+                    foreach ($keywords as $kw) {
+                        if ($kw !== '' && mb_strpos($lowerComment, mb_strtolower($kw)) !== false) {
+                            $matched = true;
+                            break;
+                        }
+                    }
+                    if (!$matched) {
+                        continue;
+                    }
+                }
+
+                $customerKey = 'fb:' . ($fromId ?: $commentId);
+                $senderLabel = $fromName !== '' ? $fromName : null;
+
+                $result = $this->aiChatService->handleCustomerMessage(
+                    $targetCompany,
+                    $customerKey,
+                    $commentText,
+                    'messenger',
+                    $senderLabel
+                );
+
+                if (!empty($result['reply']) && $targetCompany->isMessengerConnected()) {
+                    $messengerService->sendPrivateReplyToComment($targetCompany, $commentId, $result['reply']);
+
+                    $publicReply = trim((string) ($targetCompany->messenger_comment_public_reply ?? ''));
+                    if ($publicReply !== '') {
+                        $messengerService->replyToComment($targetCompany, $commentId, $publicReply);
+                    }
+                }
+            }
+        }
+
+        return response()->json(['status' => 'success'], 200);
+    }
+
+    /**
+     * Resolve the exact tenant company owning a Facebook Page for Messenger.
+     */
+    protected function resolveMessengerCompany(?string $companyIdentifier, string $recipientId, string $entryId): ?Company
+    {
+        if ($companyIdentifier) {
+            $byParam = Company::where('id', $companyIdentifier)
+                ->orWhere('slug', $companyIdentifier)
+                ->first();
+            if ($byParam) {
+                return $byParam;
+            }
+        }
+
+        $ids = array_values(array_unique(array_filter([$recipientId, $entryId])));
+        if (!empty($ids)) {
+            return Company::whereIn('messenger_page_id', $ids)->first();
         }
 
         return null;

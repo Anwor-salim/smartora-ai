@@ -1,0 +1,47 @@
+name: Deploy SmartOra to Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy backend and frontend via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+
+            echo "=== 1. Syncing repository (/opt/smartora/app) ==="
+            cd /opt/smartora/app
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "=== 2. Rebuilding and restarting app & frontend containers ==="
+            cd /opt/smartora
+            docker compose up -d --build app frontend
+
+            echo "=== 3. Waiting for containers and verifying health ==="
+            sleep 5
+            docker compose ps app frontend
+            curl -fsS -o /dev/null https://smartora.orderssoft.com/
+            curl -fsS -o /dev/null https://smartora.orderssoft.com/login
+            curl -fsS -o /dev/null https://smartora.orderssoft.com/api/companies/public
+
+            echo "=== 4. Cleaning dangling Docker images ==="
+            docker image prune -f
+
+            echo "=== Deployment completed successfully ==="

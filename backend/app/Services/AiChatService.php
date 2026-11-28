@@ -89,8 +89,20 @@ class AiChatService
             ]);
         }
 
+        $freshSettings = Company::whereKey($company->id)->value('settings');
+        if (is_string($freshSettings)) {
+            $freshSettings = json_decode($freshSettings, true) ?: [];
+        }
+        $knowledgeCutoffMsgId = max(
+            (int) ($company->settings['knowledge_cutoff_message_id'] ?? 0),
+            (int) (is_array($freshSettings) ? ($freshSettings['knowledge_cutoff_message_id'] ?? 0) : 0)
+        );
+
         // Determine if this is a fresh session before persisting the new incoming message
-        $hasPriorBotReply = $conversation->messages()->where('sender', 'bot')->exists();
+        $hasPriorBotReply = $conversation->messages()
+            ->where('sender', 'bot')
+            ->when($knowledgeCutoffMsgId > 0, fn ($q) => $q->where('id', '>', $knowledgeCutoffMsgId))
+            ->exists();
         $isSessionStart = $isNewCustomer
             || !$hasPriorBotReply
             || !$conversation->last_interaction_at
@@ -190,9 +202,47 @@ class AiChatService
             ];
         }
 
+        // 4b. Dynamic Google Sheets-Driven Booking Coordinator (when booking_enabled = true)
+        if ($this->isBookingEnabled($company)) {
+            $bookingResult = $this->handleBookingFlowIfActive($company, $conversation, $incomingMessage, $channel);
+            if ($bookingResult !== null) {
+                $bookingReply = $this->formatForChannel($bookingResult['reply'], $channel);
+
+                Message::create([
+                    'conversation_id' => $conversation->id,
+                    'sender' => 'bot',
+                    'message' => $bookingReply,
+                    'metadata' => [
+                        'engine' => 'booking_engine',
+                        'intent' => $bookingResult['intent'] ?? 'booking',
+                        'has_knowledge_base' => $company->documents()->count() > 0,
+                    ],
+                ]);
+
+                $conversation->update([
+                    'last_message' => $incomingMessage,
+                    'last_interaction_at' => Carbon::now(),
+                ]);
+
+                return [
+                    'status' => 'success',
+                    'reply' => $bookingReply,
+                    'is_new_customer' => $isNewCustomer,
+                    'conversation_id' => $conversation->id,
+                    'conversation_state' => $bookingResult['conversation_state'] ?? ($conversation->conversation_state ?: 'booking'),
+                    'engine' => 'booking_engine',
+                ];
+            }
+        }
+
         // 5. Load Recent Conversation Memory
         $memoryLimit = max(4, min(20, (int) ($company->settings['memory_messages_limit'] ?? 12)));
-        $history = $conversation->getRecentHistory($memoryLimit, 24, $incomingMsgRecord->id);
+        $history = $conversation->getRecentHistory(
+            $memoryLimit,
+            24,
+            $incomingMsgRecord->id,
+            $knowledgeCutoffMsgId > 0 ? $knowledgeCutoffMsgId : null
+        );
 
         // 6. Assemble Dynamic Knowledge Context
         $knowledgeContext = $this->buildKnowledgeContext($company, $incomingMessage, $conversation, $history);
@@ -207,7 +257,7 @@ class AiChatService
             $isSessionStart
         );
 
-        $reply = $generated['reply'];
+        $reply = $this->formatForChannel($generated['reply'], $channel);
         $engine = $generated['engine'];
         $meta = $generated['meta'] ?? [];
 
@@ -247,6 +297,722 @@ class AiChatService
             'conversation_state' => $updatedState,
             'engine' => $engine,
         ];
+    }
+
+    protected function isBookingEnabled(Company $company): bool
+    {
+        return (bool) ($company->settings['booking_enabled'] ?? false);
+    }
+
+    /**
+     * Coordinate dynamic Google Sheets-driven booking, duplicate checks, capacity rollover, and cancellation.
+     *
+     * @return array{reply: string, conversation_state: string, intent: string}|null
+     */
+    protected function handleBookingFlowIfActive(
+        Company $company,
+        Conversation $conversation,
+        string $incomingMessage,
+        string $channel
+    ): ?array {
+        $contextData = is_array($conversation->context_data) ? $conversation->context_data : [];
+        $hasActiveDraft = !empty($contextData['booking_draft']) && is_array($contextData['booking_draft']);
+        $normMsg = $this->normalizeArabic($incomingMessage);
+        $rawTrim = trim($incomingMessage);
+
+        $isCancelExisting = (bool) preg_match('/(الغاء الحجز|الغي الحجز|الغاء الموعد|الغي الموعد|cancel booking|cancel appointment)/ui', $normMsg . ' ' . $rawTrim);
+        $isBookingTrigger = (bool) preg_match('/(احجز|حجز|موعد|ابغي احجز|ابغا احجز|ابي احجز|اريد احجز|كيف احجز|اسجل|سجلني|تسجيل|\bbook\b|\bappointment\b|\breserve\b)/ui', $normMsg . ' ' . $rawTrim);
+
+        /** @var AppointmentBookingService $bookingService */
+        $bookingService = app(AppointmentBookingService::class);
+        $tz = $bookingService->getCompanyTimezone($company);
+
+        $isBookingFollowUp = false;
+        if (!$hasActiveDraft && !$isCancelExisting && !$isBookingTrigger) {
+            $lastBotMessage = $conversation->messages()
+                ->where('sender', 'bot')
+                ->latest('id')
+                ->first();
+
+            $botOfferedBooking = false;
+            if (
+                $lastBotMessage
+                && ($lastBotMessage->metadata['engine'] ?? null) !== 'booking_engine'
+                && (!$lastBotMessage->created_at || $lastBotMessage->created_at->gte(Carbon::now()->subHours(6)))
+            ) {
+                $normBotMsg = $this->normalizeArabic((string) $lastBotMessage->message);
+                $botOfferedBooking = (bool) preg_match(
+                    '/(هل\s+(?:ترغب|تود|تحب|تريد).{0,60}(?:حجز|موعد)|(?:ترغب|تود|تحب)\s+في\s+حجز|لحجز\s*(?:الموعد|موعد)|لترتيب\s*(?:الموعد|موعد)|لاتمام\s*(?:الحجز|حجزك)|تزويدي\s*بالاسم|book\s+an?\s+appointment|would\s+you\s+like\s+to\s+book)/ui',
+                    $normBotMsg
+                );
+            }
+
+            if ($botOfferedBooking) {
+                $eastern = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+                $western = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+                $cleanTrim = str_replace($eastern, $western, $rawTrim);
+
+                $isQuestionOrInquiry = (bool) preg_match(
+                    '/(كم\s*(?:السعر|الكشف|سعر)|وين|اين|موقع|عنوان|دكتور|طبيب|دوام|ساعات|هل\s+يوجد|ما\s*هي|ماهي|ايش|وش|\?|؟)/u',
+                    $normMsg . ' ' . $rawTrim
+                );
+                $isAffirmativeReply = (bool) preg_match(
+                    '/^(نعم|ايوه|ايوا|ايه|اي|اجل|اكيد|طبعا|بالتاكيد|تمام|موافق|طيب|حاضر|ممتاز|ابغي|ابغا|ابي|اريد|ممكن|ياريت|يا ليت|اوكي|اوك|yes|yeah|yep|sure|ok|okay)(?:\s+(?:اريد|ابغي|ابغا|ابي|احجز|حجز|موعد|لو سمحت|من فضلك|شكرا|ان شاء الله|please))*$/ui',
+                    $normMsg
+                );
+                $startsWithAffirmative = (bool) preg_match(
+                    '/^(نعم|ايوه|ايوا|ايه|اي|اكيد|تمام|موافق|طيب|yes|ok)\b/ui',
+                    $normMsg
+                );
+                $hasTimeSignal = (bool) (
+                    preg_match('/(?:الساع[ةه]\s*)?\d{1,2}(?::\d{2})?\s*(?:صباحاً|صباحا|مساءً|مساء|عصراً|عصرا|ظهراً|ظهرا|ليلاً|ليلا|ص|م|am|pm)/ui', $cleanTrim)
+                    || preg_match('/الساع[ةه]\s*\d{1,2}(?::\d{2})?/u', $cleanTrim)
+                    || preg_match('/(?:^|[\s،,:;\-])(صباحاً|صباحا|الصباح|مساءً|مساء|المساء|عصراً|عصرا|العصر|ظهراً|ظهرا|الظهر|المغرب|العشاء|ليلاً|ليلا)(?=$|[\s،,:;\.\!\?؟])/u', $cleanTrim)
+                );
+                $hasBookingDataSignals = !$isQuestionOrInquiry && (
+                    preg_match('/(?:^|\s)(?:اسمي|الاسم)\s*[:\-]?\s*[^\s]/u', $cleanTrim)
+                    || $bookingService->parseArabicDate($rawTrim, $tz) !== null
+                    || $hasTimeSignal
+                );
+
+                $isBookingFollowUp = !$isQuestionOrInquiry && ($isAffirmativeReply || $startsWithAffirmative || $hasBookingDataSignals);
+            }
+        }
+
+        if (!$hasActiveDraft && !$isCancelExisting && !$isBookingTrigger && !$isBookingFollowUp) {
+            return null;
+        }
+
+        // Allow abandoning an in-progress booking draft
+        if ($hasActiveDraft && !$isCancelExisting && preg_match('/^(الغاء|الغي|بطلت|تراجع|لا شكرا|خلاص|cancel|stop)$/ui', $normMsg)) {
+            unset($contextData['booking_draft']);
+            $contextData['last_intent'] = 'booking_draft_cancelled';
+            $conversation->update([
+                'conversation_state' => 'browsing',
+                'context_data' => $contextData,
+            ]);
+
+            return [
+                'reply' => 'تم إلغاء خطوة الحجز. كيف يمكنني مساعدتك الآن؟',
+                'conversation_state' => 'browsing',
+                'intent' => 'booking_draft_cancelled',
+            ];
+        }
+
+        // Duplicate protection & self-service cancellation for active appointments
+        $existing = $bookingService->findActiveAppointment($company, $conversation->customer_phone);
+        if ($existing) {
+            if ($isCancelExisting) {
+                $bookingService->cancelAppointment($existing, 'customer');
+                unset($contextData['booking_draft']);
+                $contextData['last_intent'] = 'appointment_cancelled';
+                $conversation->update([
+                    'conversation_state' => 'browsing',
+                    'context_data' => $contextData,
+                ]);
+
+                $dateStr = $existing->appointment_date?->toDateString() ?? '';
+                return [
+                    'reply' => "✅ تم إلغاء حجزك رقم **{$existing->booking_code}** بتاريخ **{$dateStr}** وإتاحة المقعد. يمكنك إرسال (حجز) لطلب موعد جديد في أي وقت.",
+                    'conversation_state' => 'browsing',
+                    'intent' => 'appointment_cancelled',
+                ];
+            }
+
+            unset($contextData['booking_draft']);
+            $contextData['last_intent'] = 'duplicate_booking';
+            $conversation->update([
+                'conversation_state' => 'browsing',
+                'context_data' => $contextData,
+            ]);
+
+            $dateStr = $existing->appointment_date?->toDateString() ?? '';
+            $dayName = $existing->appointment_date ? $bookingService->arabicDayName($existing->appointment_date) : '';
+            $details = [
+                "• رقم الحجز: **{$existing->booking_code}**",
+                "• الحالة: **{$existing->statusLabelArabic()}**",
+                "• التاريخ: **{$dayName} ({$dateStr})**",
+                "• رقم الدور: **#{$existing->queue_number}**",
+            ];
+            if ($existing->appointment_time) {
+                $details[] = "• الوقت: **{$existing->appointment_time}**";
+            }
+            if (is_array($existing->form_data)) {
+                foreach ($existing->form_data as $k => $v) {
+                    if (trim((string) $v) !== '' && !preg_match('/(تاريخ|يوم|وقت|ساعه|date|day|time)/u', $this->normalizeArabic((string) $k))) {
+                        $details[] = "• {$k}: {$v}";
+                    }
+                }
+            }
+
+            return [
+                'reply' => "أهلاً بك! أنت مسجّل مسبقاً لدينا في **{$company->name}** ولا يمكن تكرار الحجز.\n\n"
+                    . implode("\n", $details)
+                    . "\n\n💡 إذا رغبت في إلغاء هذا الحجز لعمل حجز جديد، أرسل: **إلغاء الحجز**",
+                'conversation_state' => 'browsing',
+                'intent' => 'duplicate_booking',
+            ];
+        }
+
+        if ($isCancelExisting) {
+            return [
+                'reply' => 'لا يوجد لديك حالياً أي حجز نشط لإلغائه.',
+                'conversation_state' => $conversation->conversation_state ?: 'browsing',
+                'intent' => 'no_active_booking',
+            ];
+        }
+
+        // Load dynamic columns from the company's Google Sheet (or fallback custom fields)
+        $schema = $bookingService->refreshSheetHeaders($company);
+        $customerFields = $schema['customer_fields'] ?? [];
+
+        $draft = $hasActiveDraft
+            ? $contextData['booking_draft']
+            : [
+                'collected' => [],
+                'parsed_date' => null,
+                'parsed_time' => null,
+                'suggested_date' => null,
+                'last_asked_field' => null,
+            ];
+
+        // Pre-fill clinic/service field from prior chat topic on initial booking trigger
+        if (!$hasActiveDraft && !empty($contextData['last_matched_title'])) {
+            $topicTitle = trim((string) $contextData['last_matched_title']);
+            if (!$this->isGenericDocumentSectionTitle($topicTitle)) {
+                foreach ($customerFields as $f) {
+                    if (
+                        $f['type'] === 'text'
+                        && empty($draft['collected'][$f['label']])
+                        && preg_match('/(عياده|قسم|خدمه|تخصص|clinic|service|department)/u', $this->normalizeArabic($f['label']))
+                    ) {
+                        $draft['collected'][$f['label']] = $topicTitle;
+                        break;
+                    }
+                }
+            }
+        }
+
+        $newlyParsedDate = null;
+
+        // Handle affirmative/negative reply to a suggested rollover date
+        if (!empty($draft['suggested_date'])) {
+            if (preg_match('/^(نعم|ايوه|ايه|اي|تمام|موافق|طيب|سجلني|سجل|اوكي|اوك|مناسب|yes|ok|sure)$/ui', $normMsg)) {
+                $suggestedCarbon = Carbon::parse((string) $draft['suggested_date'], $tz)->startOfDay();
+                $newlyParsedDate = $suggestedCarbon;
+                $draft['suggested_date'] = null;
+            } elseif (preg_match('/^(لا|ما يناسب|لا يناسب|يوم ثاني|تاريخ ثاني|no)$/ui', $normMsg)) {
+                $draft['suggested_date'] = null;
+                $contextData['booking_draft'] = $draft;
+                $conversation->update([
+                    'conversation_state' => 'booking',
+                    'context_data' => $contextData,
+                ]);
+
+                return [
+                    'reply' => 'حسناً، ما هو اليوم أو التاريخ المناسب لك لكي أفحص لك المقاعد المتاحة؟',
+                    'conversation_state' => 'booking',
+                    'intent' => 'booking_ask_date',
+                ];
+            }
+        }
+
+        // Extract field values from the customer's message
+        $extracted = $this->extractBookingFieldsFromMessage(
+            $company,
+            $incomingMessage,
+            $customerFields,
+            $draft,
+            $bookingService,
+            $tz
+        );
+
+        foreach ($extracted['fields'] as $label => $val) {
+            if (trim((string) $val) !== '') {
+                $draft['collected'][$label] = trim((string) $val);
+            }
+        }
+        if ($extracted['parsed_time'] !== null) {
+            $draft['parsed_time'] = $extracted['parsed_time'];
+        }
+        if ($newlyParsedDate === null && $extracted['parsed_date'] !== null) {
+            $newlyParsedDate = $extracted['parsed_date'];
+        }
+
+        // Validate date capacity & auto-rollover if a date was provided in this message
+        if ($newlyParsedDate !== null) {
+            $remaining = $bookingService->getRemainingSlots($company, $newlyParsedDate);
+            $requestedDay = $bookingService->arabicDayName($newlyParsedDate);
+            $requestedDateStr = $newlyParsedDate->toDateString();
+
+            if ($remaining <= 0) {
+                $isWorking = $bookingService->isWorkingDay($company, $newlyParsedDate);
+                $next = $bookingService->findNextAvailableDate($company, $newlyParsedDate->copy()->addDay());
+
+                $draft['parsed_date'] = null;
+                foreach ($customerFields as $f) {
+                    if ($f['type'] === 'date') {
+                        unset($draft['collected'][$f['label']]);
+                    }
+                }
+                $draft['suggested_date'] = $next['date_string'] ?? null;
+                $contextData['booking_draft'] = $draft;
+                $contextData['last_intent'] = 'booking_day_full';
+                $conversation->update([
+                    'conversation_state' => 'booking',
+                    'context_data' => $contextData,
+                ]);
+
+                $reasonText = $isWorking
+                    ? "اكتمل العدد المحدد ليوم **{$requestedDay} ({$requestedDateStr})**"
+                    : "يوم **{$requestedDay} ({$requestedDateStr})** يوم إجازة ولا تتوفر فيه حجوزات";
+
+                if ($next) {
+                    $skippedFullNote = '';
+                    $fullSkipped = array_values(array_filter(
+                        $next['skipped_days'] ?? [],
+                        fn ($d) => ($d['reason'] ?? '') === 'full'
+                    ));
+                    if (!empty($fullSkipped)) {
+                        $names = array_map(fn ($d) => "{$d['day']} ({$d['date']})", array_slice($fullSkipped, 0, 3));
+                        $skippedFullNote = ' (وكذلك ' . implode(' و ', $names) . ' مكتمل)';
+                    }
+
+                    return [
+                        'reply' => "نعتذر منك، {$reasonText}{$skippedFullNote}.\n"
+                            . "💡 أقرب يوم متاح حالياً هو **{$next['arabic_day']} ({$next['date_string']})** (متبقي {$next['remaining']} مقاعد).\n\n"
+                            . 'هل تريد أن أسجّلك في هذا اليوم؟',
+                        'conversation_state' => 'booking',
+                        'intent' => 'booking_day_full',
+                    ];
+                }
+
+                return [
+                    'reply' => "نعتذر منك، {$reasonText} ولا تتوفر مقاعد متاحة خلال الأيام القادمة. يرجى ذكر تاريخ آخر أو التواصل مع الإدارة.",
+                    'conversation_state' => 'booking',
+                    'intent' => 'booking_day_full',
+                ];
+            }
+
+            // Date is available — lock it and populate date field(s)
+            $draft['parsed_date'] = $requestedDateStr;
+            $draft['suggested_date'] = null;
+            $formattedDateVal = "{$requestedDay} {$requestedDateStr}";
+            foreach ($customerFields as $f) {
+                if ($f['type'] === 'date') {
+                    $draft['collected'][$f['label']] = $formattedDateVal;
+                }
+            }
+        }
+
+        // Check which dynamic fields are still missing
+        $missingFields = [];
+        foreach ($customerFields as $f) {
+            $val = trim((string) ($draft['collected'][$f['label']] ?? ''));
+            if ($val === '') {
+                $missingFields[] = $f;
+            }
+        }
+
+        $needsDate = empty($draft['parsed_date']);
+
+        if (!empty($missingFields) || $needsDate) {
+            $missingLabels = array_map(fn ($f) => $f['label'], $missingFields);
+            if ($needsDate && empty(array_filter($missingFields, fn ($f) => $f['type'] === 'date'))) {
+                $missingLabels[] = 'اليوم أو التاريخ المناسب';
+            }
+
+            $draft['last_asked_field'] = count($missingFields) === 1 ? $missingFields[0]['label'] : null;
+            $contextData['booking_draft'] = $draft;
+            $contextData['last_intent'] = 'booking_collecting';
+            $conversation->update([
+                'conversation_state' => 'booking',
+                'context_data' => $contextData,
+            ]);
+
+            $rawTopicTitle = trim((string) ($contextData['last_matched_title'] ?? ''));
+            $topicHint = (!$hasActiveDraft && $rawTopicTitle !== '' && !$this->isGenericDocumentSectionTitle($rawTopicTitle))
+                ? " (بخصوص **{$rawTopicTitle}**)"
+                : '';
+
+            $bullets = implode("\n", array_map(fn ($lbl) => "• **{$lbl}**", $missingLabels));
+            $prefix = !$hasActiveDraft
+                ? "بكل سرور! لإتمام حجزك في **{$company->name}**{$topicHint} يرجى تزويدي بالبيانات التالية:"
+                : 'شكراً لك! لإتمام الحجز، يرجى تزويدي بالبيانات المتبقية التالية:';
+
+            return [
+                'reply' => "{$prefix}\n{$bullets}",
+                'conversation_state' => 'booking',
+                'intent' => 'booking_collecting',
+            ];
+        }
+
+        // All required dynamic fields & valid date collected -> create appointment!
+        $targetDate = Carbon::parse((string) $draft['parsed_date'], $tz)->startOfDay();
+        $timeVal = $draft['parsed_time'];
+        $nameVal = null;
+        foreach ($customerFields as $f) {
+            if ($f['type'] === 'time' && empty($timeVal) && !empty($draft['collected'][$f['label']])) {
+                $timeVal = (string) $draft['collected'][$f['label']];
+            }
+            if ($f['type'] === 'name' && empty($nameVal) && !empty($draft['collected'][$f['label']])) {
+                $nameVal = (string) $draft['collected'][$f['label']];
+            }
+        }
+
+        $createRes = $bookingService->createAppointment(
+            $company,
+            $conversation,
+            $draft['collected'],
+            $targetDate,
+            $timeVal,
+            $nameVal
+        );
+
+        if (!$createRes['ok']) {
+            if (($createRes['reason'] ?? '') === 'day_full') {
+                $next = $createRes['next_available'] ?? null;
+                $draft['parsed_date'] = null;
+                $draft['suggested_date'] = $next['date_string'] ?? null;
+                $contextData['booking_draft'] = $draft;
+                $conversation->update([
+                    'conversation_state' => 'booking',
+                    'context_data' => $contextData,
+                ]);
+
+                if ($next) {
+                    return [
+                        'reply' => "نعتذر، اكتمل العدد في اليوم المطلوب للتو. أقرب يوم متاح هو **{$next['arabic_day']} ({$next['date_string']})** (متبقي {$next['remaining']} مقاعد). هل تريد أن أسجّلك فيه؟",
+                        'conversation_state' => 'booking',
+                        'intent' => 'booking_day_full',
+                    ];
+                }
+            }
+
+            return [
+                'reply' => 'نعتذر، تعذر إتمام الحجز حالياً. يرجى المحاولة مرة أخرى.',
+                'conversation_state' => 'browsing',
+                'intent' => 'booking_error',
+            ];
+        }
+
+        /** @var \App\Models\Appointment $appointment */
+        $appointment = $createRes['appointment'];
+
+        unset($contextData['booking_draft']);
+        $contextData['last_intent'] = 'appointment_created';
+        $contextData['last_booking_code'] = $appointment->booking_code;
+        $conversation->update([
+            'conversation_state' => 'browsing',
+            'context_data' => $contextData,
+            'summary' => mb_substr("تم تسجيل حجز ({$appointment->booking_code}) بتاريخ {$appointment->appointment_date?->toDateString()} - الحالة: {$appointment->statusLabelArabic()}", 0, 500),
+        ]);
+
+        $dayName = $bookingService->arabicDayName($targetDate);
+        $summaryLines = [
+            "• رقم الطلب: **{$appointment->booking_code}**",
+            "• اليوم والتاريخ: **{$dayName} ({$targetDate->toDateString()})**",
+            "• رقم الدور: **#{$appointment->queue_number}**",
+        ];
+        foreach ($draft['collected'] as $k => $v) {
+            if (!preg_match('/(تاريخ|يوم|date|day)/u', $this->normalizeArabic((string) $k))) {
+                $summaryLines[] = "• {$k}: **{$v}**";
+            }
+        }
+
+        $statusFooter = $appointment->status === 'pending'
+            ? "\n\n⏳ **طلبك الآن قيد المراجعة لدى الاستقبال**، وسيصلك تأكيد فوري عبر الواتساب بمجرد قبوله."
+            : "\n\n✅ **تم تأكيد حجزك مباشرة**! يسعدنا استقبالك في الموعد المحدد.";
+
+        return [
+            'reply' => "✅ **تم تسجيل طلب حجزك بنجاح في {$company->name}!**\n\n"
+                . implode("\n", $summaryLines)
+                . $statusFooter,
+            'conversation_state' => 'browsing',
+            'intent' => 'appointment_created',
+        ];
+    }
+
+    /**
+     * Extract dynamic booking field values from a customer's message using deterministic rules + optional Gemini JSON helper.
+     *
+     * @return array{fields: array<string, string>, parsed_date: ?Carbon, parsed_time: ?string}
+     */
+    protected function extractBookingFieldsFromMessage(
+        Company $company,
+        string $message,
+        array $customerFields,
+        array $draft,
+        AppointmentBookingService $bookingService,
+        string $timezone
+    ): array {
+        $fields = [];
+        $eastern = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+        $western = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+        $cleanMsg = str_replace($eastern, $western, trim($message));
+        $normMsg = $this->normalizeArabic($cleanMsg);
+
+        $isPureTrigger = (bool) preg_match('/^(ابغي احجز|ابغا احجز|ابي احجز|اريد احجز|احجز|حجز|حجز موعد|ابغي موعد|ابغا موعد|موعد|كيف احجز|سجلني|تسجيل|book|appointment|نعم|ايوه|ايوا|ايه|اي|اجل|اكيد|طبعا|بالتاكيد|تمام|موافق|طيب|حاضر|ممتاز|ابغي|ابغا|ابي|اريد|ممكن|ياريت|يا ليت|اوكي|اوك|yes|yeah|yep|sure|ok|okay)$/ui', $normMsg);
+
+        $parsedDate = $bookingService->parseArabicDate($cleanMsg, $timezone);
+        $parsedTime = null;
+
+        // Extract time expressions (e.g., "العصر السعه 5:30", "الساعة 4 العصر", "10:30 صباحا", "5 مساء", "5:30", or "العصر")
+        if (preg_match('/(صباحاً|صباحا|الصباح|مساءً|مساء|المساء|عصراً|عصرا|العصر|ظهراً|ظهرا|الظهر|المغرب|العشاء|ليلاً|ليلا)\s*(?:الساع[ةه]|السع[ةه])?\s*(\d{1,2}(?::\d{2})?)/ui', $cleanMsg, $tm)) {
+            $parsedTime = trim($tm[2] . ' ' . $tm[1]);
+        } elseif (preg_match('/(?:(?:الساع[ةه]|السع[ةه])\s*)?(\d{1,2}(?::\d{2})?\s*(?:صباحاً|صباحا|الصباح|مساءً|مساء|المساء|عصراً|عصرا|العصر|ظهراً|ظهرا|الظهر|المغرب|العشاء|ليلاً|ليلا|ص|م|am|pm))/ui', $cleanMsg, $tm)) {
+            $parsedTime = trim($tm[1]);
+        } elseif (preg_match('/(?:الساع[ةه]|السع[ةه])\s*(\d{1,2}(?::\d{2})?)/u', $cleanMsg, $tm)) {
+            $parsedTime = trim($tm[1]);
+        } elseif (preg_match('/\b([01]?\d|2[0-3]):([0-5]\d)\b/u', $cleanMsg, $tm)) {
+            $parsedTime = trim($tm[0]);
+        } elseif (preg_match('/(?:^|[\s،,:;\-])(صباحاً|صباحا|الصباح|مساءً|مساء|المساء|عصراً|عصرا|العصر|ظهراً|ظهرا|الظهر|المغرب|العشاء|ليلاً|ليلا)(?=$|[\s،,:;\.\!\?؟])/u', $cleanMsg, $tm)) {
+            $parsedTime = trim($tm[1]);
+        }
+
+        if ($parsedTime !== null) {
+            foreach ($customerFields as $f) {
+                if ($f['type'] === 'time' && empty($draft['collected'][$f['label']])) {
+                    $fields[$f['label']] = $parsedTime;
+                }
+            }
+        }
+
+        // Parse explicit "key: value" lines
+        $lines = preg_split('/\r?\n/u', $cleanMsg) ?: [];
+        foreach ($lines as $line) {
+            if (!str_contains($line, ':')) {
+                continue;
+            }
+            [$rawKey, $rawVal] = array_pad(explode(':', $line, 2), 2, '');
+            $normKey = $this->normalizeArabic($rawKey);
+            $val = trim($rawVal);
+            if ($normKey === '' || $val === '') {
+                continue;
+            }
+            foreach ($customerFields as $f) {
+                $normField = $this->normalizeArabic($f['label']);
+                if ($normField === $normKey || str_contains($normField, $normKey) || str_contains($normKey, $normField)) {
+                    if ($f['type'] === 'time') {
+                        $sanitizedTime = $this->sanitizeTimeFieldValue($val);
+                        if ($sanitizedTime !== null) {
+                            $fields[$f['label']] = $sanitizedTime;
+                            if ($parsedTime === null) {
+                                $parsedTime = $sanitizedTime;
+                            }
+                        }
+                    } else {
+                        $fields[$f['label']] = $val;
+                    }
+                }
+            }
+        }
+
+        // Deterministic extraction for age/number and explicit name phrase
+        foreach ($customerFields as $f) {
+            $label = $f['label'];
+            if (!empty($fields[$label]) || !empty($draft['collected'][$label])) {
+                continue;
+            }
+
+            if ($f['type'] === 'number') {
+                if (preg_match('/(?:عمري|العمر|سني|السن|age)\s*[:\-]?\s*(\d{1,3})/ui', $cleanMsg, $am)) {
+                    $fields[$label] = $am[1];
+                } elseif (preg_match('/^(\d{1,3})\s*(?:سنه|سنة|عام|عاما|عاماً)?$/u', $normMsg, $am)) {
+                    $fields[$label] = $am[1];
+                }
+            } elseif ($f['type'] === 'name') {
+                if (preg_match('/(?:اسمي|الاسم)\s*[:\-]?\s*([^\n،,0-9]{2,60})/u', $cleanMsg, $nm)) {
+                    $candidateName = trim((string) preg_replace('/\b(عمري|العمر|سني|السن|اليوم|بكره|بكرة|غدا|غداً|الساعة|الساعه|يوم|السبت|الاحد|الأحد|الاثنين|الإثنين|الثلاثاء|الاربعاء|الأربعاء|الخميس|الجمعة|الجمعه|الوقت|وقت|التاريخ|تاريخ|صباحا|صباحاً|الصباح|مساء|مساءً|المساء|عصرا|عصراً|العصر|ظهرا|ظهراً|الظهر|المغرب|العشاء|ليلا|ليلاً).*$/u', '', $nm[1]));
+                    if (mb_strlen($candidateName) >= 2) {
+                        $fields[$label] = $candidateName;
+                    }
+                }
+            }
+        }
+
+        // Determine which fields are still missing before optional Gemini structured extraction
+        $stillMissing = [];
+        foreach ($customerFields as $f) {
+            $lbl = $f['label'];
+            $hasDateFilled = ($f['type'] === 'date' && $parsedDate !== null);
+            if (empty($fields[$lbl]) && empty($draft['collected'][$lbl]) && !$hasDateFilled) {
+                $stillMissing[] = $f;
+            }
+        }
+
+        // Single-field direct answer (e.g., bot asked only for "الاسم" or "نوع التأمين")
+        if (
+            count($stillMissing) === 1
+            && !$isPureTrigger
+            && $stillMissing[0]['type'] !== 'date'
+            && !empty($draft['last_asked_field'])
+            && $draft['last_asked_field'] === $stillMissing[0]['label']
+        ) {
+            $targetField = $stillMissing[0];
+            if ($targetField['type'] === 'number') {
+                if (preg_match('/(\d{1,3})/', $cleanMsg, $m)) {
+                    $fields[$targetField['label']] = $m[1];
+                }
+            } elseif ($targetField['type'] === 'time') {
+                $sanitizedTime = $this->sanitizeTimeFieldValue($parsedTime ?: $cleanMsg);
+                if ($sanitizedTime !== null) {
+                    $fields[$targetField['label']] = $sanitizedTime;
+                    $parsedTime = $sanitizedTime;
+                }
+            } else {
+                $fields[$targetField['label']] = $cleanMsg;
+            }
+        } elseif (count($stillMissing) >= 1 && !$isPureTrigger) {
+            // Try Gemini JSON extraction for free-form multi-field Arabic messages when valid key is configured
+            $geminiExtracted = $this->extractBookingFieldsViaGemini($company, $cleanMsg, $stillMissing);
+            foreach ($geminiExtracted as $lbl => $val) {
+                if (empty($fields[$lbl]) && empty($draft['collected'][$lbl]) && trim((string) $val) !== '') {
+                    $cleanVal = trim((string) $val);
+                    $fieldType = null;
+                    foreach ($stillMissing as $mf) {
+                        if ($mf['label'] === $lbl) {
+                            $fieldType = $mf['type'];
+                            break;
+                        }
+                    }
+                    if ($fieldType === 'time') {
+                        $cleanVal = $this->sanitizeTimeFieldValue($cleanVal) ?? '';
+                        if ($cleanVal === '') {
+                            continue;
+                        }
+                        if ($parsedTime === null) {
+                            $parsedTime = $cleanVal;
+                        }
+                    }
+                    $fields[$lbl] = $cleanVal;
+                    if ($fieldType === 'date' && $parsedDate === null) {
+                        $parsedDate = $bookingService->parseArabicDate($cleanVal, $timezone);
+                    }
+                }
+            }
+        }
+
+        return [
+            'fields' => $fields,
+            'parsed_date' => $parsedDate,
+            'parsed_time' => $parsedTime,
+        ];
+    }
+
+    /**
+     * Strip date words/tokens from a candidate time string so relative dates (e.g. "غداً") never leak into appointment_time.
+     */
+    protected function sanitizeTimeFieldValue(string $rawValue): ?string
+    {
+        $cleaned = trim($rawValue);
+        if ($cleaned === '') {
+            return null;
+        }
+
+        $dateTokenPattern = '/(?:^|[\s،,:;\-])('
+            . 'بعد\s+(?:غد|بكرة|بكره|بكرا)'
+            . '|(?:بتاريخ|تاريخ|يوم)\s*[:\-]?\s*[^\s،,]+'
+            . '|\d{4}[-\/]\d{1,2}[-\/]\d{1,2}'
+            . '|\d{1,2}[-\/]\d{1,2}'
+            . '|اليوم|غداً|غدا|بكرة|بكره|بكرا'
+            . '|السبت|الأحد|الاحد|الإثنين|الاثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس|الجمعة|الجمعه'
+            . '|tomorrow|today'
+            . ')(?=$|[\s،,:;\.\!\?؟])/ui';
+
+        $cleaned = (string) preg_replace($dateTokenPattern, ' ', $cleaned);
+        $cleaned = (string) preg_replace('/(?:^|[\s،,:;\-]+)(?:في|و)(?=$|[\s،,:;\-]+)/u', ' ', $cleaned);
+        $cleaned = trim((string) preg_replace('/^[\s،,:;\-]+|[\s،,:;\-]+$/u', '', $cleaned));
+        $cleaned = trim((string) preg_replace('/\s+/u', ' ', $cleaned));
+
+        return $cleaned !== '' ? $cleaned : null;
+    }
+
+    /**
+     * Use Gemini JSON mode to extract explicitly stated dynamic fields from a multi-field message.
+     *
+     * @return array<string, string>
+     */
+    protected function extractBookingFieldsViaGemini(Company $company, string $message, array $missingFields): array
+    {
+        $geminiKey = $this->resolveApiKey('GEMINI_API_KEY', $company->settings['gemini_api_key'] ?? null);
+        $isValidGeminiKey = $geminiKey && (
+            ((str_starts_with($geminiKey, 'AIza') || str_starts_with($geminiKey, 'AQ.')) && strlen($geminiKey) >= 25)
+            || app()->runningUnitTests()
+        );
+        if (!$isValidGeminiKey || empty($missingFields)) {
+            return [];
+        }
+
+        $fieldLabels = array_map(fn ($f) => $f['label'], $missingFields);
+        $prompt = "استخرج فقط القيم المصرح بها بوضوح من رسالة العميل التالية للحقول المطلوبة.\n"
+            . "الحقول المطلوبة: " . json_encode($fieldLabels, JSON_UNESCAPED_UNICODE) . "\n"
+            . "أعد كائن JSON فقط مفاتيحه هي أسماء الحقول الموجودة في القائمة أعلاه، واترك أي حقل غير مذكور في الرسالة غير موجود أو فارغاً بدون تخمين.\n"
+            . "رسالة العميل: \"{$message}\"";
+
+        $model = $company->settings['gemini_model'] ?? 'models/gemini-flash-lite-latest';
+        if (!str_starts_with($model, 'models/')) {
+            $model = 'models/' . $model;
+        }
+
+        try {
+            $response = Http::timeout(6.0)
+                ->connectTimeout(2.5)
+                ->post("https://generativelanguage.googleapis.com/v1beta/{$model}:generateContent?key={$geminiKey}", [
+                    'contents' => [
+                        ['role' => 'user', 'parts' => [['text' => $prompt]]],
+                    ],
+                    'generationConfig' => [
+                        'temperature' => 0.1,
+                        'responseMimeType' => 'application/json',
+                    ],
+                ]);
+
+            if (!$response->successful()) {
+                return [];
+            }
+
+            $parts = $response->json('candidates.0.content.parts') ?? [];
+            $rawJson = '';
+            foreach ($parts as $p) {
+                if (empty($p['thought']) && !empty($p['text'])) {
+                    $rawJson .= $p['text'];
+                }
+            }
+
+            $decoded = json_decode(trim($rawJson), true);
+            if (!is_array($decoded)) {
+                return [];
+            }
+
+            $result = [];
+            foreach ($fieldLabels as $lbl) {
+                if (isset($decoded[$lbl]) && is_scalar($decoded[$lbl]) && trim((string) $decoded[$lbl]) !== '') {
+                    $result[$lbl] = trim((string) $decoded[$lbl]);
+                }
+            }
+
+            return $result;
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Build a clear, polite reply when automated chat booking is disabled for the company.
+     */
+    protected function buildBookingUnavailableReply(Company $company): string
+    {
+        $contactNum = $company->support_phone ?: ($company->phone ?: $company->whatsapp_number);
+        $reply = "نعتذر منك، خدمة حجز المواعيد عبر المحادثة غير متوفرة حالياً في **{$company->name}**.";
+        if ($contactNum) {
+            $reply .= "\n📞 يمكنك التواصل معنا مباشرة على: {$contactNum}";
+        }
+        if ($company->address) {
+            $reply .= "\n📍 العنوان: {$company->address}";
+        }
+
+        return $reply;
     }
 
     /**
@@ -420,9 +1186,13 @@ class AiChatService
             default => 'استخدم أسلوباً ودوداً ومهنياً يعكس رقي خدمة العملاء ويفهم لهجة العميل بذكاء.',
         };
 
+        $bookingEnabled = $this->isBookingEnabled($company);
+
         $sessionInstruction = $isSessionStart
             ? "بداية محادثة جديدة — ابدأ بترحيب مختصر ولطيف باسم المنشأة ({$company->name}) ثم أجب مباشرة."
-            : "محادثة مستمرة — لا تكرر الترحيب أو تعريف المنشأة أو العنوان ورقم الهاتف في كل رسالة؛ ادخل في الإجابة مباشرة ولا تذكر الموقع أو الرقم إلا إذا سأل العميل أو عند تأكيد حجز/طلب.";
+            : ($bookingEnabled
+                ? "محادثة مستمرة — لا تكرر الترحيب أو تعريف المنشأة أو العنوان ورقم الهاتف في كل رسالة؛ ادخل في الإجابة مباشرة ولا تذكر الموقع أو الرقم إلا إذا سأل العميل أو عند تأكيد حجز/طلب."
+                : "محادثة مستمرة — لا تكرر الترحيب أو تعريف المنشأة أو العنوان ورقم الهاتف في كل رسالة؛ ادخل في الإجابة مباشرة ولا تذكر الموقع أو الرقم إلا إذا سأل العميل عنها أو اعتذرت عن عدم توفر الحجز.");
 
         $contextData = is_array($conversation->context_data) ? $conversation->context_data : [];
         $currentState = $conversation->conversation_state ?: 'browsing';
@@ -430,16 +1200,43 @@ class AiChatService
         $basePrompt = $company->custom_system_prompt
             ?: "أنت المساعد الذكي والممثل الرسمي لخدمة عملاء منشأة ({$company->name}) عبر {$channelArabic}.";
 
+        $tomorrow = $now->copy()->addDay();
+        $afterTomorrow = $now->copy()->addDays(2);
+        $tomorrowDay = $arabicDays[(int) $tomorrow->dayOfWeek] ?? '';
+        $afterTomorrowDay = $arabicDays[(int) $afterTomorrow->dayOfWeek] ?? '';
+
         $lines = [
             $basePrompt,
             '',
             '[سياق الجلسة الحالي / Live Conversation Context]:',
             "- التاريخ والوقت الحالي: {$dateTimeStr}",
+            "- مرجع التواريخ القريبة (التزم به بدقة ولا تخلط بين غداً وبعد غد): اليوم = {$dayName} ({$now->toDateString()}) | غداً = {$tomorrowDay} ({$tomorrow->toDateString()}) | بعد غد = {$afterTomorrowDay} ({$afterTomorrow->toDateString()})",
             "- قناة التواصل: {$channelArabic}",
             '- اسم العميل: ' . ($conversation->customer_name ?: 'غير محدد'),
             "- حالة الجلسة: {$sessionInstruction}",
             "- مرحلة المحادثة الحالية: {$currentState}",
         ];
+
+        if ($bookingEnabled && !empty($conversation->customer_phone)) {
+            $activeAppointment = app(AppointmentBookingService::class)->findActiveAppointment($company, $conversation->customer_phone);
+            if ($activeAppointment) {
+                $apptDateCarbon = $activeAppointment->appointment_date
+                    ? Carbon::parse($activeAppointment->appointment_date->toDateString(), $timezone)->startOfDay()
+                    : null;
+                $apptDateStr = $apptDateCarbon?->toDateString() ?? '';
+                $apptDayName = $apptDateCarbon ? ($arabicDays[(int) $apptDateCarbon->dayOfWeek] ?? '') : '';
+                $daysDiff = $apptDateCarbon ? (int) $now->copy()->startOfDay()->diffInDays($apptDateCarbon, false) : null;
+                $relativeTag = match ($daysDiff) {
+                    0 => 'اليوم',
+                    1 => 'غداً',
+                    2 => 'بعد غد',
+                    default => $apptDateStr,
+                };
+                $lines[] = "- حجز العميل النشط المسجّل في النظام: كود ({$activeAppointment->booking_code}) | اليوم والتاريخ: {$apptDayName} ({$apptDateStr}) [{$relativeTag}]"
+                    . ($activeAppointment->appointment_time ? " | الوقت: {$activeAppointment->appointment_time}" : '')
+                    . " | الدور: #{$activeAppointment->queue_number} | الحالة: {$activeAppointment->statusLabelArabic()}";
+            }
+        }
 
         if (!empty($conversation->summary)) {
             $lines[] = '- ملخص المحادثة السابقة: ' . $conversation->summary;
@@ -452,15 +1249,21 @@ class AiChatService
             $lines[] = '- الميزانية التي ذكرها العميل: ' . number_format((float) $contextData['mentioned_budget']) . ' ريال';
         }
 
+        $hasReadyDocuments = $company->documents()->where('status', 'ready')->exists();
+
         $lines[] = '';
         $lines[] = '[إرشادات وقواعد الرد المعتمد]:';
-        $lines[] = '1. اقرأ كامل سياق الرسائل السابقة واربط الأسئلة القصيرة أو الضمائر (مثل: "كم سعره؟"، "متى دوامهم؟"، "ابغى احجز") بما تم ذكره سابقاً في المحادثة.';
-        $lines[] = '2. استند في إجابتك حصراً ودقة إلى بيانات ومعلومات ومستندات المنشأة المرفقة أدناه، ولا تخترع أسعاراً أو تفاصيل غير موجودة.';
-        $lines[] = '3. لا تكرر الترحيب أو بيانات الموقع ورقم الهاتف في المحادثات المستمرة إلا إذا سأل العميل عنها أو عند تأكيد طلب/حجز.';
+        $lines[] = '1. اقرأ كامل سياق الرسائل السابقة واربط الأسئلة القصيرة أو الضمائر (مثل: "كم سعره؟"، "متى دوامهم؟"، "وين موقعها؟") بما تم ذكره سابقاً في المحادثة.';
+        $lines[] = $hasReadyDocuments
+            ? '2. استند في إجابتك حصراً ودقة إلى المستندات والملفات المرفقة حالياً في قاعدة المعرفة أدناه بوصفها المصدر الأساسي والأحدث (وإن وُجد تعارض بين الملف المرفق والبيانات العامة القديمة للمنشأة فقدّم ما ورد في الملف المرفق)، ولا تخترع أسعاراً أو عيادات أو تفاصيل غير موجودة في البيانات الحالية.'
+            : '2. استند في إجابتك حصراً ودقة إلى بيانات ومعلومات ومستندات المنشأة المرفقة أدناه، ولا تخترع أسعاراً أو تفاصيل غير موجودة.';
+        $lines[] = '3. لا تكرر الترحيب أو بيانات الموقع ورقم الهاتف في المحادثات المستمرة إلا إذا سأل العميل عنها.';
         $lines[] = '4. إذا كانت معلومات العميل ناقصة أو غير محددة، وجّهه بسؤال واحد واضح ومحدد في نهاية الرد بدلاً من طرح عدة أسئلة متفرقة.';
         $lines[] = '5. إذا سأل عن ميزانية أو صنف غير متوفر بذاته، وضّح له بلطف الخيارات والبدائل الأقرب المتاحة في البيانات.';
         $lines[] = "6. {$toneInstruction} وطابق لغة العميل (عربي أو إنجليزي) واجعل الرد منسقاً بنقاط واضحة تناسب شاشة الهاتف.";
-        $lines[] = '7. إذا أبدى العميل رغبة في الحجز أو الطلب، اجمع البيانات الناقصة خطوة بخطوة بوضوح (الخدمة/الصنف المطلوب، الوقت/اليوم المناسب، والاسم إن لزم) بالاعتماد على التاريخ والوقت الحالي.';
+        $lines[] = $bookingEnabled
+            ? '7. نظام الحجز التلقائي مفعّل عبر محرك الحجوزات في النظام: لا تؤكد تسجيل أو حجز أي موعد من عندك أبداً ولا تكتب "تم تسجيل/تأكيد حجزك" لأن تسجيل المواعيد والتحقق من السعة يتم حصراً عبر محرك الحجز الآلي. يمكنك فقط سؤال العميل إن كان يرغب في حجز موعد (مثلاً: "هل ترغب في حجز موعد؟") ليتولى محرك الحجز جمع بياناته وتسجيله رسمياً. وعند ذكر تاريخ أي موعد مسجّل للعميل التزم باليوم والتاريخ المحددين في سياق الجلسة بدقة ولا تقل "غداً" لموعد يقع "بعد غد" أو في تاريخ آخر.'
+            : '7. خدمة حجز المواعيد عبر المحادثة غير مفعّلة حالياً في هذه المنشأة: لا تعرض على العميل حجز موعد عبر البوت نهائياً، ولا تطلب منه وقتاً أو تاريخاً للحجز. وإذا سأل العميل أو طلب حجز موعد (مثل: كيف أحجز؟ / أبغى أحجز موعد)، اعتذر بلطف وأوضح له بوضوح أنه لا يوجد حجز مواعيد عبر المحادثة حالياً، ووجّهه للتواصل المباشر على الرقم الرسمي للمنشأة أو الحضور.';
         $lines[] = '';
         $lines[] = "[بيانات ومستندات المنشأة المعتمدة / Company Knowledge Base]:\n" . $knowledgeContext;
 
@@ -558,25 +1361,34 @@ class AiChatService
         $systemPrompt = $this->buildSystemPrompt($company, $knowledgeContext, $conversation, $isSessionStart);
 
         // 1. Try Google Gemini API (native multi-turn + systemInstruction)
-        if ($geminiKey) {
-            $configuredModel = $company->settings['gemini_model'] ?? 'models/gemini-2.5-flash';
+        $isValidGeminiKey = $geminiKey && (
+            ((str_starts_with($geminiKey, 'AIza') || str_starts_with($geminiKey, 'AQ.')) && strlen($geminiKey) >= 25)
+            || app()->runningUnitTests()
+        );
+        if ($geminiKey && !$isValidGeminiKey) {
+            Log::warning("Skipping invalid Gemini API key for company {$company->id}.");
+        }
+
+        if ($isValidGeminiKey) {
+            $configuredModel = $company->settings['gemini_model'] ?? 'models/gemini-flash-lite-latest';
             if (!str_starts_with($configuredModel, 'models/')) {
                 $configuredModel = 'models/' . $configuredModel;
             }
 
             $modelsToTry = array_values(array_unique([
                 $configuredModel,
-                'models/gemini-2.5-flash',
-                'models/gemini-2.0-flash',
                 'models/gemini-flash-lite-latest',
+                'models/gemini-3.5-flash-lite',
+                'models/gemini-3.8-flash',
+                'models/gemini-flash-latest',
             ]));
 
             $geminiContents = $this->buildGeminiContents($history, $userMessage);
 
             foreach ($modelsToTry as $currentModel) {
                 try {
-                    $response = Http::timeout(15.0)
-                        ->connectTimeout(4.0)
+                    $response = Http::timeout(10.0)
+                        ->connectTimeout(3.5)
                         ->post("https://generativelanguage.googleapis.com/v1beta/{$currentModel}:generateContent?key={$geminiKey}", [
                             'systemInstruction' => [
                                 'parts' => [
@@ -611,7 +1423,8 @@ class AiChatService
                             ];
                         }
                     } else {
-                        Log::warning("Gemini model {$currentModel} returned status " . $response->status());
+                        $errMsg = (string) ($response->json('error.message') ?? '');
+                        Log::warning("Gemini model {$currentModel} returned status " . $response->status() . ($errMsg !== '' ? ": {$errMsg}" : ''));
                     }
                 } catch (\Exception $e) {
                     Log::warning("Gemini timeout/error on {$currentModel}: " . $e->getMessage());
@@ -679,6 +1492,7 @@ class AiChatService
         $contactNum = $company->phone ?: $company->whatsapp_number;
         $location = $company->address ?: 'المقر الرئيسي';
         $contextData = is_array($conversation->context_data) ? $conversation->context_data : [];
+        $bookingEnabled = $this->isBookingEnabled($company);
 
         // 1. Pure Greetings
         if (mb_strlen($rawMsg) < 25 && (
@@ -716,15 +1530,35 @@ class AiChatService
             $isPriceFollowUp = (bool) preg_match('/^(كم|بكم|سعره|سعرها|السعر|الكشف|كم سعره|كم سعرها|كم السعر|كم الكشف|كم التكلفه|التكلفه|كم يكلف)\b/u', $normMsg)
                 || ($isEnglish && preg_match('/\b(how much|price|cost|fee)\b/i', $rawMsg));
 
-            $isDetailFollowUp = (bool) preg_match('/(تفاصيله|تفاصيلها|تفاصيل اكثر|مواصفاته|مواصفاتها|معلومات اكثر|دوامه|دوامهم|اوقاته|اوقاتها|مواعيده|متي دوامه|موجود|متوفر|عندكم منه)/u', $normMsg)
+            $isDoctorFollowUp = (bool) preg_match('/(دكتور|الدكتور|طبيب|الطبيب|دكتوره|الدكتوره|استشاري|اخصائي|من الدكتور|مين الدكتور|اسم الدكتور)/u', $normMsg)
+                || ($isEnglish && preg_match('/\b(doctor|physician)\b/i', $rawMsg));
+
+            $isItemLocationFollowUp = (bool) preg_match('/(وينها|وينه|فينها|فينه|اي دور|الدور|الطابق|الجناح|الغرفه|موقعها|موقعه|مكانها|مكانه|موقع العياده|مكان العياده)/u', $normMsg);
+
+            $isItemContactFollowUp = (bool) preg_match('/(رقمه|رقمها|واتسابه|واتسابها|واتس العياده|رقم العياده|تواصلهم)/u', $normMsg);
+
+            $isItemScheduleFollowUp = (bool) preg_match('/(دوامه|دوامها|دوامهم|اوقاته|اوقاتها|مواعيده|مواعيدها|متي موجود|متي متوفر)/u', $normMsg);
+
+            $isDetailFollowUp = (bool) preg_match('/(تفاصيله|تفاصيلها|تفاصيل اكثر|مواصفاته|مواصفاتها|معلومات اكثر|موجود|متوفر|عندكم منه)/u', $normMsg)
                 || ($isEnglish && preg_match('/\b(details|more info|available|schedule|hours for it)\b/i', $rawMsg));
 
-            $isBookingIntent = (bool) preg_match('/(احجز|حجز|موعد|ابغي احجز|ابي احجز|اريد احجز|بكره|غدا|اليوم|سجلني|نحجز)/u', $normMsg)
-                || ($isEnglish && preg_match('/\b(book|appointment|reserve|schedule)\b/i', $rawMsg));
+            $isBookingIntent = (bool) preg_match('/(احجز|حجز|موعد|ابغي احجز|ابي احجز|اريد احجز|كيف احجز|سجلني|نحجز)/u', $normMsg)
+                || ($isEnglish && preg_match('/\b(book|appointment|reserve)\b/i', $rawMsg));
 
             $isAlternativeFollowUp = (bool) preg_match('/(غيره|غيرها|بديل|ثاني|خيار ثاني|اقل سعر|ارخص)/u', $normMsg);
 
             if ($isBookingIntent && $rememberedTitle !== '') {
+                if (!$bookingEnabled) {
+                    return [
+                        'reply' => $this->buildBookingUnavailableReply($company),
+                        'meta' => [
+                            'intent' => 'booking_unavailable',
+                            'matched_row' => $rememberedRow,
+                            'matched_title' => $rememberedTitle,
+                        ],
+                    ];
+                }
+
                 $bookingReply = "بكل سرور! بخصوص حجز موعد لـ **{$rememberedTitle}**:\n"
                     . "• أرسل لي **اليوم والوقت المناسب لك** مع **الاسم الكريم** لتنسيق الموعد لك مباشرة.";
                 if ($contactNum) {
@@ -740,8 +1574,67 @@ class AiChatService
                 ];
             }
 
+            if ($isDoctorFollowUp && $rememberedRow) {
+                $doctorValue = $this->extractAttributeFromRow($rememberedRow, 'doctor');
+                if ($doctorValue !== null) {
+                    $suffix = $bookingEnabled ? 'هل تود معرفة موقع العيادة أو حجز موعد؟' : 'هل تود معرفة موقع العيادة أو تفاصيل أخرى؟';
+                    return [
+                        'reply' => "👨‍⚕️ الطبيب في **{$rememberedTitle}**:\n• {$doctorValue}\n\n{$suffix}",
+                        'meta' => [
+                            'intent' => 'doctor_followup',
+                            'matched_row' => $rememberedRow,
+                            'matched_title' => $rememberedTitle,
+                        ],
+                    ];
+                }
+            }
+
+            if ($isItemLocationFollowUp && $rememberedRow) {
+                $locValue = $this->extractAttributeFromRow($rememberedRow, 'location');
+                if ($locValue !== null) {
+                    $suffix = $bookingEnabled ? 'هل تود حجز موعد أو الاستفسار عن تفاصيل أخرى؟' : 'هل تود الاستفسار عن تفاصيل أخرى؟';
+                    return [
+                        'reply' => "📍 موقع **{$rememberedTitle}**:\n• {$locValue}\n\n{$suffix}",
+                        'meta' => [
+                            'intent' => 'location_followup',
+                            'matched_row' => $rememberedRow,
+                            'matched_title' => $rememberedTitle,
+                        ],
+                    ];
+                }
+            }
+
+            if ($isItemContactFollowUp && $rememberedRow) {
+                $contactValue = $this->extractAttributeFromRow($rememberedRow, 'contact');
+                if ($contactValue !== null) {
+                    return [
+                        'reply' => "📞 رقم التواصل لـ **{$rememberedTitle}**:\n• {$contactValue}\n\nهل تود الاستفسار عن شيء آخر؟",
+                        'meta' => [
+                            'intent' => 'contact_followup',
+                            'matched_row' => $rememberedRow,
+                            'matched_title' => $rememberedTitle,
+                        ],
+                    ];
+                }
+            }
+
+            if ($isItemScheduleFollowUp && $rememberedRow) {
+                $scheduleValue = $this->extractAttributeFromRow($rememberedRow, 'schedule');
+                if ($scheduleValue !== null) {
+                    $suffix = $bookingEnabled ? 'هل تود حجز موعد يناسبك؟' : 'هل تود معرفة تفاصيل أخرى؟';
+                    return [
+                        'reply' => "⏰ مواعيد **{$rememberedTitle}**:\n• {$scheduleValue}\n\n{$suffix}",
+                        'meta' => [
+                            'intent' => 'schedule_followup',
+                            'matched_row' => $rememberedRow,
+                            'matched_title' => $rememberedTitle,
+                        ],
+                    ];
+                }
+            }
+
             if ($isPriceFollowUp && $rememberedRow) {
-                $priceReply = $this->formatFollowUpPriceReply($rememberedRow, $rememberedTitle);
+                $priceReply = $this->formatFollowUpPriceReply($rememberedRow, $rememberedTitle, $bookingEnabled);
                 if ($priceReply !== null) {
                     return [
                         'reply' => $priceReply,
@@ -754,10 +1647,11 @@ class AiChatService
                 }
             }
 
-            if (($isPriceFollowUp || $isDetailFollowUp) && $rememberedRow) {
+            if (($isPriceFollowUp || $isDetailFollowUp || $isDoctorFollowUp || $isItemLocationFollowUp || $isItemContactFollowUp || $isItemScheduleFollowUp) && $rememberedRow) {
                 $details = $this->formatDynamicRowDetails($rememberedRow, $company);
+                $suffix = $bookingEnabled ? 'هل تود الاستفسار عن خيار آخر أو حجز موعد؟' : 'هل تود الاستفسار عن خيار أو تفاصيل أخرى؟';
                 return [
-                    'reply' => $details . "\n\nهل تود الاستفسار عن خيار آخر أو حجز موعد؟",
+                    'reply' => $details . "\n\n{$suffix}",
                     'meta' => [
                         'intent' => 'details_followup',
                         'matched_row' => $rememberedRow,
@@ -775,7 +1669,7 @@ class AiChatService
                 ));
                 if (!empty($filteredAlt)) {
                     return [
-                        'reply' => $this->formatDynamicSummaryList($filteredAlt, $company, $isSessionStart),
+                        'reply' => $this->formatDynamicSummaryList($filteredAlt, $company, $isSessionStart, $bookingEnabled),
                         'meta' => [
                             'intent' => 'alternative_followup',
                             'matched_row' => $filteredAlt[0],
@@ -819,9 +1713,12 @@ class AiChatService
             ($isEnglish && preg_match('/\b(hours|working hours|open|time|schedule)\b/i', $rawMsg))
         )) {
             $hoursText = $company->working_hours ?: "من 8 صباحاً حتى 10 مساءً، ويسعدنا دائماً استقبالكم.";
+            $ongoingSuffix = $bookingEnabled
+                ? 'هل ترغب في حجز موعد أو الاستفسار عن خدمة محددة؟'
+                : 'هل تود الاستفسار عن خدمة أو قسم محدد؟';
             $reply = $isSessionStart
                 ? "⏰ أوقات العمل في {$company->name}:\n{$hoursText}\n📞 هاتف: {$contactNum}"
-                : "⏰ أوقات العمل لدينا:\n{$hoursText}\n\nهل ترغب في حجز موعد أو الاستفسار عن خدمة محددة؟";
+                : "⏰ أوقات العمل لدينا:\n{$hoursText}\n\n{$ongoingSuffix}";
 
             return [
                 'reply' => $reply,
@@ -864,9 +1761,16 @@ class AiChatService
 
         // 7. Booking Intent without prior matched row
         if (
-            preg_match('/(احجز|حجز|موعد|ابغي احجز|ابي احجز|اريد احجز)/u', $normMsg) ||
+            preg_match('/(احجز|حجز|موعد|ابغي احجز|ابي احجز|اريد احجز|كيف احجز|سجلني|نحجز)/u', $normMsg) ||
             ($isEnglish && preg_match('/\b(book|appointment|reserve)\b/i', $rawMsg))
         ) {
+            if (!$bookingEnabled) {
+                return [
+                    'reply' => $this->buildBookingUnavailableReply($company),
+                    'meta' => ['intent' => 'booking_unavailable'],
+                ];
+            }
+
             $bookingAsk = $isSessionStart
                 ? "أهلاً بك في **{$company->name}**! يسعدنا تنسيق موعدك.\n"
                 : "بكل سرور، يسعدنا تنسيق موعدك.\n";
@@ -894,7 +1798,7 @@ class AiChatService
         // 8. Dynamic Budget / Numeric Inquiry
         $userBudget = $this->extractBudgetFromMessage($normMsg);
         if ($userBudget !== null && $documents->count() > 0) {
-            $budgetReply = $this->evaluateDynamicBudgetAgainstData($userBudget, $documents, $company, $isSessionStart);
+            $budgetReply = $this->evaluateDynamicBudgetAgainstData($userBudget, $documents, $company, $isSessionStart, $bookingEnabled);
             if ($budgetReply) {
                 return [
                     'reply' => $budgetReply,
@@ -911,6 +1815,32 @@ class AiChatService
             $topRow = $matchedRows[0];
             $topTitle = $this->extractRowTitle($topRow);
 
+            if (count($matchedRows) === 1) {
+                $singleDetails = $this->formatDynamicRowDetails($topRow, $company);
+                if ($bookingEnabled) {
+                    $followPrompt = $this->extractAttributeFromRow($topRow, 'doctor') !== null
+                        ? "\n\nهل تود معرفة موقع العيادة أو حجز موعد؟"
+                        : "\n\nهل تود معرفة تفاصيل إضافية أو حجز موعد لهذه الخدمة؟";
+                } else {
+                    $followPrompt = $this->extractAttributeFromRow($topRow, 'doctor') !== null
+                        ? "\n\nهل تود معرفة تفاصيل أخرى عن هذه العيادة؟"
+                        : "\n\nهل تود معرفة تفاصيل إضافية عن هذه الخدمة؟";
+                }
+
+                if ($isSessionStart && $contactNum) {
+                    $followPrompt = "\n📞 للتواصل المباشر: {$contactNum}" . $followPrompt;
+                }
+
+                return [
+                    'reply' => $singleDetails . $followPrompt,
+                    'meta' => [
+                        'intent' => 'item_inquiry',
+                        'matched_row' => $topRow,
+                        'matched_title' => $topTitle,
+                    ],
+                ];
+            }
+
             if (count($matchedRows) <= 3) {
                 $replies = [];
                 foreach ($matchedRows as $row) {
@@ -920,7 +1850,9 @@ class AiChatService
                     $callToAction = "\n📞 للتواصل المباشر والطلب: {$contactNum}";
                     if ($location) $callToAction .= "\n📍 الموقع: {$location}";
                 } else {
-                    $callToAction = "\nهل تود معرفة تفاصيل إضافية أو حجز موعد لهذه الخدمة؟";
+                    $callToAction = $bookingEnabled
+                        ? "\nهل تود معرفة تفاصيل إضافية أو حجز موعد لهذه الخدمة؟"
+                        : "\nهل تود معرفة تفاصيل إضافية عن أي خيار منها؟";
                 }
                 return [
                     'reply' => implode("\n\n───────────────\n\n", $replies) . $callToAction,
@@ -933,7 +1865,7 @@ class AiChatService
             }
 
             return [
-                'reply' => $this->formatDynamicSummaryList($matchedRows, $company, $isSessionStart),
+                'reply' => $this->formatDynamicSummaryList($matchedRows, $company, $isSessionStart, $bookingEnabled),
                 'meta' => [
                     'intent' => 'item_inquiry',
                     'matched_row' => $topRow,
@@ -947,7 +1879,7 @@ class AiChatService
             ($isEnglish && preg_match('/\b(list|catalog|catalogue|inventory|available|products|items|show me|prices|clinics|departments|services|doctors)\b/i', $rawMsg));
 
         if ($isCatalogIntent && $documents->count() > 0) {
-            $catalogResponse = $this->formatDynamicCatalogOverview($documents, $company, $isSessionStart);
+            $catalogResponse = $this->formatDynamicCatalogOverview($documents, $company, $isSessionStart, $bookingEnabled);
             if ($catalogResponse) {
                 return [
                     'reply' => $catalogResponse,
@@ -958,7 +1890,7 @@ class AiChatService
 
         // 11. Universal Fallback
         if ($documents->count() > 0) {
-            $catalogOverview = $this->formatDynamicCatalogOverview($documents, $company, $isSessionStart);
+            $catalogOverview = $this->formatDynamicCatalogOverview($documents, $company, $isSessionStart, $bookingEnabled);
             if ($catalogOverview) {
                 $prefix = $isSessionStart
                     ? "أهلاً بك في **{$company->name}**! يسعدنا خدمتك والرد على استفسارك.\n\n"
@@ -995,12 +1927,80 @@ class AiChatService
     }
 
     /**
-     * Format a focused price follow-up answer for a previously remembered document row.
+     * Format reply text for the target messaging channel.
      */
-    protected function formatFollowUpPriceReply(array $row, string $title): ?string
+    protected function formatForChannel(string $reply, string $channel): string
+    {
+        if ($channel === 'whatsapp') {
+            return preg_replace('/\*\*(.+?)\*\*/u', '*$1*', $reply) ?? $reply;
+        }
+
+        return $reply;
+    }
+
+    /**
+     * Extract a specific attribute (doctor, location, contact, schedule) from row keys or detail lines.
+     */
+    protected function extractAttributeFromRow(array $row, string $attributeType): ?string
     {
         $cleanRow = $row;
-        unset($cleanRow['_score'], $cleanRow['_num_price']);
+        unset($cleanRow['_score'], $cleanRow['_num_price'], $cleanRow['_matched_words'], $cleanRow['_heading_hits']);
+
+        $pattern = match ($attributeType) {
+            'doctor' => '/(طبيب|دكتور|دكتوره|استشاري|اخصائي|doctor|physician)/u',
+            'location' => '/(الموقع داخل المبني|موقع|دور|طابق|جناح|غرفه|مكان|location|floor|room)/u',
+            'contact' => '/(واتساب|واتس|رقم|هاتف|جوال|تواصل|whatsapp|phone|contact)/u',
+            'schedule' => '/(مواعيد|موعد|دوام|اوقات|ساعات|وقت|schedule|hours|time)/u',
+            default => '/.*/u',
+        };
+
+        // 1. Check structured column keys directly
+        foreach ($cleanRow as $colName => $colValue) {
+            $colNameStr = trim((string) $colName);
+            $colValStr = trim((string) $colValue);
+            if ($colValStr === '' || $colNameStr === 'التفاصيل') {
+                continue;
+            }
+            if (preg_match($pattern, $this->normalizeArabic($colNameStr))) {
+                return $colValStr;
+            }
+        }
+
+        // 2. Scan lines inside structured text fields (e.g. 'التفاصيل')
+        foreach ($cleanRow as $colValue) {
+            $text = trim((string) $colValue);
+            if ($text === '') {
+                continue;
+            }
+            $lines = preg_split('/\r?\n/u', $text) ?: [];
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === '') {
+                    continue;
+                }
+                if (str_contains($line, ':')) {
+                    [$label, $val] = array_pad(explode(':', $line, 2), 2, '');
+                    $normLabel = $this->normalizeArabic($label);
+                    if (preg_match($pattern, $normLabel) && trim($val) !== '') {
+                        return trim($val);
+                    }
+                }
+                if ($attributeType === 'doctor' && preg_match('/(\bد\.|دكتور|دكتوره|طبيب)/u', $this->normalizeArabic($line))) {
+                    return $line;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Format a focused price follow-up answer for a previously remembered document row.
+     */
+    protected function formatFollowUpPriceReply(array $row, string $title, bool $bookingEnabled = false): ?string
+    {
+        $cleanRow = $row;
+        unset($cleanRow['_score'], $cleanRow['_num_price'], $cleanRow['_matched_words'], $cleanRow['_heading_hits']);
 
         $priceLines = [];
         foreach ($cleanRow as $colName => $colValue) {
@@ -1022,7 +2022,10 @@ class AiChatService
         }
 
         $header = $title !== '' ? "بخصوص **{$title}**:" : 'بخصوص البند السابق:';
-        return $header . "\n" . implode("\n", $priceLines) . "\n\nهل ترغب في حجز موعد أو الاستفسار عن تفاصيل أخرى؟";
+        $suffix = $bookingEnabled
+            ? 'هل ترغب في حجز موعد أو الاستفسار عن تفاصيل أخرى؟'
+            : 'هل ترغب في الاستفسار عن تفاصيل أخرى؟';
+        return $header . "\n" . implode("\n", $priceLines) . "\n\n{$suffix}";
     }
 
     /**
@@ -1031,7 +2034,7 @@ class AiChatService
     protected function extractRowTitle(array $row): string
     {
         foreach ($row as $k => $v) {
-            if (in_array((string) $k, ['_score', '_num_price'], true)) {
+            if (in_array((string) $k, ['_score', '_num_price', '_matched_words', '_heading_hits'], true)) {
                 continue;
             }
             $val = trim((string) $v);
@@ -1041,7 +2044,7 @@ class AiChatService
         }
 
         foreach ($row as $k => $v) {
-            if (in_array((string) $k, ['_score', '_num_price'], true)) {
+            if (in_array((string) $k, ['_score', '_num_price', '_matched_words', '_heading_hits'], true)) {
                 continue;
             }
             $val = trim((string) $v);
@@ -1051,6 +2054,22 @@ class AiChatService
         }
 
         return '';
+    }
+
+    /**
+     * Detect generic profile/PDF heading labels so they are never treated as a concrete clinic or product topic.
+     */
+    protected function isGenericDocumentSectionTitle(string $title): bool
+    {
+        $norm = $this->normalizeArabic($title);
+        if ($norm === '') {
+            return true;
+        }
+
+        return (bool) preg_match(
+            '/^(نبذه\s*(?:عن|تعريفيه)|ملف\s*تعريفي|معلومات\s*(?:التشغيل|عامه|التواصل)|اوقات\s*(?:وساعات|العمل|الدوام)|ساعات\s*(?:العمل|الدوام)|الموقع\s*(?:والعنوان|الجغرافي)?|العنوان|رابط\s*خرائط|اسم\s*المنشاه|البند|التفاصيل|تنبيه\s*مهم|ملاحظه|ملاحظات)/u',
+            $norm
+        );
     }
 
     /**
@@ -1074,17 +2093,23 @@ class AiChatService
         if (!$matchedRow && $documents->count() > 0) {
             $rows = $this->searchDynamicDocumentRows($documents, $normMsg);
             if (!empty($rows) && ($rows[0]['_score'] ?? 0) >= 2) {
-                $matchedRow = $rows[0];
-                $matchedTitle = $this->extractRowTitle($matchedRow);
+                $candidateTitle = $this->extractRowTitle($rows[0]);
+                if (!$this->isGenericDocumentSectionTitle($candidateTitle)) {
+                    $matchedRow = $rows[0];
+                    $matchedTitle = $candidateTitle;
+                }
             }
+        }
+        if ($matchedTitle !== null && $this->isGenericDocumentSectionTitle((string) $matchedTitle)) {
+            $matchedTitle = null;
         }
 
         $budget = $meta['budget'] ?? $this->extractBudgetFromMessage($normMsg);
 
         $intent = $meta['intent'] ?? null;
         if (!$intent) {
-            if (preg_match('/(احجز|حجز|موعد|ابغي احجز|ابي احجز|اريد احجز|\bbook\b|\bappointment\b)/ui', $normMsg . ' ' . $incomingMessage)) {
-                $intent = 'booking_interest';
+            if (preg_match('/(احجز|حجز|موعد|ابغي احجز|ابي احجز|اريد احجز|كيف احجز|\bbook\b|\bappointment\b)/ui', $normMsg . ' ' . $incomingMessage)) {
+                $intent = $this->isBookingEnabled($company) ? 'booking_interest' : 'booking_unavailable';
             } elseif ($matchedTitle || $budget !== null || preg_match('/(سعر|بكم|كم|تفاصيل|عرض|دوام|موقع)/u', $normMsg)) {
                 $intent = 'inquiring';
             } else {
@@ -1093,7 +2118,7 @@ class AiChatService
         }
 
         if ($matchedRow) {
-            unset($matchedRow['_score'], $matchedRow['_num_price']);
+            unset($matchedRow['_score'], $matchedRow['_num_price'], $matchedRow['_matched_words'], $matchedRow['_heading_hits']);
             $contextData['last_matched_row'] = $matchedRow;
         }
         if ($matchedTitle) {
@@ -1116,11 +2141,12 @@ class AiChatService
 
         // Determine updated conversation_state (preserve human_handoff unless explicitly reset)
         $currentState = $conversation->conversation_state ?: 'browsing';
+        $bookingEnabled = $this->isBookingEnabled($company);
         if ($currentState === 'human_handoff') {
             $newState = 'human_handoff';
-        } elseif ($intent === 'booking_interest' || $currentState === 'booking') {
+        } elseif ($bookingEnabled && ($intent === 'booking_interest' || $currentState === 'booking')) {
             $newState = 'booking';
-        } elseif (in_array($intent, ['item_inquiry', 'price_followup', 'details_followup', 'alternative_followup', 'budget_inquiry', 'inquiring'], true)) {
+        } elseif (in_array($intent, ['item_inquiry', 'price_followup', 'details_followup', 'alternative_followup', 'budget_inquiry', 'inquiring', 'doctor_followup', 'location_followup', 'contact_followup', 'schedule_followup', 'booking_unavailable'], true)) {
             $newState = 'inquiring';
         } elseif ($currentState === 'inquiring' && !in_array($intent, ['greeting'], true)) {
             $newState = 'inquiring';
@@ -1175,12 +2201,14 @@ class AiChatService
         // Filter out stop words that don't indicate a product, clinic, or feature
         $stopWords = [
             'في', 'من', 'ما', 'هي', 'هو', 'هم', 'شو', 'ايش', 'وش', 'هل', 'عن', 'عندكم', 'لديكم',
-            'عندك', 'موجود', 'موجوده', 'متوفر', 'متوفره', 'المتوفره', 'الموجوده', 'اريد', 'ابغى',
-            'ابغي', 'ابي', 'احتاج', 'كم', 'سعر', 'السعر', 'سعره', 'سعرها', 'اسعار', 'بكم', 'الكشف',
+            'عندك', 'موجود', 'موجوده', 'متوفر', 'متوفره', 'المتوفره', 'الموجوده', 'انا', 'اريد', 'ابغى',
+            'ابغا', 'ابغي', 'ابي', 'احتاج', 'كم', 'سعر', 'السعر', 'سعره', 'سعرها', 'اسعار', 'بكم', 'الكشف',
             'تكلفه', 'التكلفه', 'فقط', 'معي', 'عندي', 'ممكن', 'احصل',
             'علا', 'على', 'الي', 'اللي', 'التي', 'الذي', 'التفاصيل', 'تفاصيل', 'تفاصيله', 'تفاصيلها',
             'مواصفاته', 'مواصفاتها', 'معلومات', 'بخصوص', 'اكثر',
-            'وين', 'اين', 'مكان', 'موقع', 'رقم', 'واتساب', 'واتس', 'تواصل', 'دكتور', 'طبيب', 'اسم',
+            'وين', 'اين', 'فين', 'وينه', 'وينها', 'مكان', 'مكانه', 'مكانها', 'موقع', 'موقعه', 'موقعها',
+            'رقم', 'رقمه', 'رقمها', 'واتساب', 'واتس', 'واتسابه', 'واتسابها', 'تواصل',
+            'دكتور', 'الدكتور', 'دكتوره', 'الدكتوره', 'دكتورها', 'طبيب', 'الطبيب', 'اسم', 'مين', 'منو',
             'دوامه', 'دوامهم', 'اوقاته', 'اوقاتها', 'مواعيده', 'احجز', 'حجز', 'موعد', 'غيره', 'غيرها', 'بديل', 'ثاني'
         ];
         $filteredWords = array_values(array_diff($words, $stopWords));
@@ -1188,6 +2216,8 @@ class AiChatService
         if (empty($filteredWords)) {
             return [];
         }
+
+        $queryAsksNotice = (bool) preg_match('/(تنبيه|ملاحظه|تنويه)/u', $normQuery);
 
         foreach ($documents as $doc) {
             $docHasRowMatch = false;
@@ -1202,10 +2232,13 @@ class AiChatService
 
                 $combinedText = implode(' ', array_merge(array_keys($row), array_values($row)));
                 $rowText = $this->normalizeArabic($combinedText);
-                $score = $this->scoreTextAgainstQueryWords($rowText, $filteredWords);
+                $headingText = $this->normalizeArabic($this->extractRowTitle($row));
+                $analysis = $this->analyzeTextMatch($rowText, $headingText, $filteredWords, $queryAsksNotice);
 
-                if ($score > 0) {
-                    $row['_score'] = $score;
+                if ($analysis['score'] > 0) {
+                    $row['_score'] = $analysis['score'];
+                    $row['_matched_words'] = $analysis['matched_words'];
+                    $row['_heading_hits'] = $analysis['heading_hits'];
                     $matches[] = $row;
                     $docHasRowMatch = true;
                 }
@@ -1221,33 +2254,63 @@ class AiChatService
                     }
 
                     $normBlock = $this->normalizeArabic($block);
-                    $score = $this->scoreTextAgainstQueryWords($normBlock, $filteredWords);
-                    if ($score > 0) {
-                        $lines = array_values(array_filter(array_map('trim', explode("\n", $block))));
-                        $heading = $lines[0] ?? 'تفاصيل المستند';
-                        $details = count($lines) > 1 ? implode("\n", array_slice($lines, 1)) : $block;
+                    $lines = array_values(array_filter(array_map('trim', explode("\n", $block))));
+                    $heading = $lines[0] ?? 'تفاصيل المستند';
+                    $details = count($lines) > 1 ? implode("\n", array_slice($lines, 1)) : $block;
+                    $normHeading = $this->normalizeArabic($heading);
+                    $analysis = $this->analyzeTextMatch($normBlock, $normHeading, $filteredWords, $queryAsksNotice);
+
+                    if ($analysis['score'] > 0) {
                         $matches[] = [
                             'القسم / البند' => $heading,
                             'التفاصيل' => $details,
-                            '_score' => $score,
+                            '_score' => $analysis['score'],
+                            '_matched_words' => $analysis['matched_words'],
+                            '_heading_hits' => $analysis['heading_hits'],
                         ];
                     }
                 }
             }
         }
 
-        // Sort by highest keyword score
-        usort($matches, fn ($a, $b) => ($b['_score'] ?? 0) <=> ($a['_score'] ?? 0));
+        // Sort by distinct matched words DESC, heading hits DESC, then total score DESC
+        usort($matches, function ($a, $b) {
+            return [($b['_matched_words'] ?? 0), ($b['_heading_hits'] ?? 0), ($b['_score'] ?? 0)]
+                <=> [($a['_matched_words'] ?? 0), ($a['_heading_hits'] ?? 0), ($a['_score'] ?? 0)];
+        });
+
+        // Dominant-match filtering so specific queries don't dump unrelated rows
+        if (!empty($matches)) {
+            $topWords = $matches[0]['_matched_words'] ?? 0;
+            $topHeading = $matches[0]['_heading_hits'] ?? 0;
+            $topScore = $matches[0]['_score'] ?? 0;
+
+            if ($topWords >= 2) {
+                $matches = array_values(array_filter($matches, function ($row) use ($topWords, $topScore) {
+                    return ($row['_matched_words'] ?? 0) >= $topWords
+                        || ($row['_score'] ?? 0) >= ($topScore * 0.8);
+                }));
+            } elseif ($topHeading >= 1 && $topScore >= 6) {
+                $matches = array_values(array_filter($matches, function ($row) use ($topScore) {
+                    return ($row['_heading_hits'] ?? 0) >= 1
+                        && ($row['_score'] ?? 0) >= ($topScore * 0.75);
+                }));
+            }
+        }
 
         return $matches;
     }
 
     /**
-     * Score normalized text against filtered normalized query words using Arabic stemming.
+     * Analyze text & heading match quality for precision ranking and dominant-match filtering.
+     *
+     * @return array{score: int, matched_words: int, heading_hits: int}
      */
-    protected function scoreTextAgainstQueryWords(string $normText, array $filteredWords): int
+    protected function analyzeTextMatch(string $normText, string $normHeading, array $filteredWords, bool $queryAsksNotice = false): array
     {
         $score = 0;
+        $matchedWords = 0;
+        $headingHits = 0;
 
         foreach ($filteredWords as $w) {
             $w = trim($w);
@@ -1256,16 +2319,56 @@ class AiChatService
             }
 
             $candidates = $this->extractArabicStems($w);
+            $matchedThisWord = false;
+            $wordScore = 0;
+
             foreach ($candidates as $idx => $candidate) {
                 if (mb_strlen($candidate) >= 2 && mb_strpos($normText, $candidate) !== false) {
-                    // Exact match gets slightly higher weight than stripped stem match
-                    $score += ($idx === 0) ? 3 : 2;
+                    $wordScore = ($idx === 0) ? 3 : 2;
+                    $matchedThisWord = true;
                     break;
+                }
+            }
+
+            if ($matchedThisWord) {
+                $matchedWords++;
+                $score += $wordScore;
+
+                foreach ($candidates as $candidate) {
+                    if ($normHeading !== '' && mb_strlen($candidate) >= 2 && mb_strpos($normHeading, $candidate) !== false) {
+                        $headingHits++;
+                        $score += 5;
+                        break;
+                    }
                 }
             }
         }
 
-        return $score;
+        // Penalize boilerplate/disclaimer notices unless the customer asked about notices
+        if (
+            !$queryAsksNotice
+            && $normHeading !== ''
+            && preg_match('/(تنبيه مهم|ملاحظه هامه|ملاحظه|تنويه|اخلاء مسؤوليه)/u', $normHeading)
+        ) {
+            $score = (int) floor($score / 3);
+            $matchedWords = min($matchedWords, 1);
+            $headingHits = 0;
+        }
+
+        return [
+            'score' => $score,
+            'matched_words' => $matchedWords,
+            'heading_hits' => $headingHits,
+        ];
+    }
+
+    /**
+     * Score normalized text against filtered normalized query words using Arabic stemming.
+     */
+    protected function scoreTextAgainstQueryWords(string $normText, array $filteredWords): int
+    {
+        $analysis = $this->analyzeTextMatch($normText, '', $filteredWords, true);
+        return $analysis['score'];
     }
 
     /**
@@ -1331,7 +2434,7 @@ class AiChatService
      */
     protected function formatDynamicRowDetails(array $row, Company $company): string
     {
-        unset($row['_score'], $row['_num_price']);
+        unset($row['_score'], $row['_num_price'], $row['_matched_words'], $row['_heading_hits']);
         $lines = [];
 
         // Determine title: first non-empty text column
@@ -1374,7 +2477,7 @@ class AiChatService
     /**
      * Format a dynamic summary list of multiple matching rows.
      */
-    protected function formatDynamicSummaryList(array $rows, Company $company, bool $isSessionStart = true): string
+    protected function formatDynamicSummaryList(array $rows, Company $company, bool $isSessionStart = true, bool $bookingEnabled = false): string
     {
         $header = $isSessionStart
             ? "📋 **الخيارات والمعلومات المطابقة لطلبك لدى {$company->name}:**\n"
@@ -1383,7 +2486,7 @@ class AiChatService
         $i = 1;
 
         foreach (array_slice($rows, 0, 12) as $row) {
-            unset($row['_score'], $row['_num_price']);
+            unset($row['_score'], $row['_num_price'], $row['_matched_words'], $row['_heading_hits']);
             $firstCol = '';
             $detailCol = '';
             $priceCol = '';
@@ -1414,7 +2517,9 @@ class AiChatService
             $contactNum = $company->phone ?: $company->whatsapp_number;
             $lines[] = "\n💡 اذكر اسم أي بند أو عيادة لمعرفة تفاصيلها فوراً، أو تواصل معنا على: {$contactNum}";
         } else {
-            $lines[] = "\n💡 اذكر اسم البند الذي تريده وسأعطيك تفاصيله أو أنسّق لك موعداً.";
+            $lines[] = $bookingEnabled
+                ? "\n💡 اذكر اسم البند الذي تريده وسأعطيك تفاصيله أو أنسّق لك موعداً."
+                : "\n💡 اذكر اسم البند الذي تريده وسأعطيك تفاصيله مباشرة.";
         }
 
         return implode("\n", $lines);
@@ -1423,7 +2528,7 @@ class AiChatService
     /**
      * Format dynamic catalog overview from whatever documents are stored for this company.
      */
-    protected function formatDynamicCatalogOverview($documents, Company $company, bool $isSessionStart = true): ?string
+    protected function formatDynamicCatalogOverview($documents, Company $company, bool $isSessionStart = true, bool $bookingEnabled = false): ?string
     {
         $allRows = [];
 
@@ -1500,7 +2605,9 @@ class AiChatService
             $contactNum = $company->phone ?: $company->whatsapp_number;
             $lines[] = "\n✨ لمعرفة تفاصيل أي عنصر أو الاستفسار عنه، يمكنك الرد باسمه أو الاتصال بنا: {$contactNum}";
         } else {
-            $lines[] = "\n✨ أرسل اسم أي عنصر لأعطيك كامل تفاصيله أو أساعدك في الحجز.";
+            $lines[] = $bookingEnabled
+                ? "\n✨ أرسل اسم أي عنصر لأعطيك كامل تفاصيله أو أساعدك في الحجز."
+                : "\n✨ أرسل اسم أي عنصر لأعطيك كامل تفاصيله مباشرة.";
         }
 
         return implode("\n", $lines);
@@ -1509,7 +2616,7 @@ class AiChatService
     /**
      * Dynamically evaluate a customer's mentioned budget against document price columns.
      */
-    protected function evaluateDynamicBudgetAgainstData(float $budget, $documents, Company $company, bool $isSessionStart = true): ?string
+    protected function evaluateDynamicBudgetAgainstData(float $budget, $documents, Company $company, bool $isSessionStart = true, bool $bookingEnabled = false): ?string
     {
         $rowsWithPrice = [];
 
@@ -1596,8 +2703,10 @@ class AiChatService
         }
 
         $lines[] = $isSessionStart
-            ? "\n📞 للحجز والاستفسار المباشر: {$contactNum}\n📍 الموقع: {$location}"
-            : "\nأي خيار من هذه الخيارات تود معرفة تفاصيله أو حجزه؟";
+            ? "\n📞 للتواصل والاستفسار المباشر: {$contactNum}\n📍 الموقع: {$location}"
+            : ($bookingEnabled
+                ? "\nأي خيار من هذه الخيارات تود معرفة تفاصيله أو حجزه؟"
+                : "\nأي خيار من هذه الخيارات تود معرفة تفاصيله؟");
 
         return implode("\n", $lines);
     }

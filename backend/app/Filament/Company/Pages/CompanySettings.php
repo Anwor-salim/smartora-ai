@@ -41,11 +41,18 @@ class CompanySettings extends Page implements HasForms
                 'working_hours' => $company->working_hours,
                 'greeting_message' => $company->settings['greeting_message'] ?? '',
                 'custom_system_prompt' => $company->custom_system_prompt,
-                'gemini_api_key' => $company->settings['gemini_api_key'] ?? '',
+                'gemini_api_key' => (
+                    !empty($company->settings['gemini_api_key'])
+                    && (
+                        str_starts_with((string) $company->settings['gemini_api_key'], 'AIza')
+                        || str_starts_with((string) $company->settings['gemini_api_key'], 'AQ.')
+                    )
+                ) ? $company->settings['gemini_api_key'] : '',
                 'response_tone' => $company->settings['response_tone'] ?? 'professional_friendly',
                 'memory_messages_limit' => (int) ($company->settings['memory_messages_limit'] ?? 12),
                 'timezone' => $company->settings['timezone'] ?? 'Asia/Riyadh',
                 'auto_pause_on_handoff' => (bool) ($company->settings['auto_pause_on_handoff'] ?? false),
+                'booking_enabled' => (bool) ($company->settings['booking_enabled'] ?? false),
             ]);
         }
     }
@@ -195,12 +202,23 @@ class CompanySettings extends Page implements HasForms
                                     ->default(false)
                                     ->columnSpanFull(),
 
+                                Forms\Components\Toggle::make('booking_enabled')
+                                    ->label('تفعيل تنسيق حجز المواعيد عبر البوت')
+                                    ->helperText('عند الإيقاف (الافتراضي)، لن يعرض البوت حجز المواعيد وسيوضح للعميل أن الحجز غير متاح عبر المحادثة مع توجيهه لرقم التواصل.')
+                                    ->default(false)
+                                    ->columnSpanFull(),
+
                                 Forms\Components\TextInput::make('gemini_api_key')
                                     ->label('مفتاح Google Gemini API Key (اختياري)')
                                     ->password()
                                     ->revealable()
-                                    ->placeholder('AIzaSy...')
-                                    ->helperText('مفتاح الربط من Google AI Studio، عند إدخاله يتولى Google Gemini صياغة الردود لهذه المنشأة.')
+                                    ->placeholder('AIza... أو AQ....')
+                                    ->extraInputAttributes([
+                                        'autocomplete' => 'new-password',
+                                        'data-lpignore' => 'true',
+                                        'data-1p-ignore' => 'true',
+                                    ])
+                                    ->helperText('مفتاح Google Gemini API من Google AI Studio (يبدأ بـ AIza... أو AQ....). اتركه فارغاً لاستخدام الإعداد الافتراضي.')
                                     ->columnSpanFull(),
                             ]),
                     ])
@@ -221,11 +239,21 @@ class CompanySettings extends Page implements HasForms
 
         $settings = $company->settings ?? [];
         $settings['greeting_message'] = $formState['greeting_message'] ?? '';
-        $settings['gemini_api_key'] = trim($formState['gemini_api_key'] ?? '');
+
+        $submittedKey = trim((string) ($formState['gemini_api_key'] ?? ''));
+        $invalidKeyWarning = false;
+        if ($submittedKey !== '' && !str_starts_with($submittedKey, 'AIza') && !str_starts_with($submittedKey, 'AQ.')) {
+            $settings['gemini_api_key'] = '';
+            $invalidKeyWarning = true;
+        } else {
+            $settings['gemini_api_key'] = $submittedKey;
+        }
+
         $settings['response_tone'] = $formState['response_tone'] ?? 'professional_friendly';
         $settings['memory_messages_limit'] = (int) ($formState['memory_messages_limit'] ?? 12);
         $settings['timezone'] = $formState['timezone'] ?? 'Asia/Riyadh';
         $settings['auto_pause_on_handoff'] = (bool) ($formState['auto_pause_on_handoff'] ?? false);
+        $settings['booking_enabled'] = (bool) ($formState['booking_enabled'] ?? false);
 
         $company->update([
             'name' => $formState['name'],
@@ -241,6 +269,17 @@ class CompanySettings extends Page implements HasForms
             'custom_system_prompt' => $formState['custom_system_prompt'] ?? null,
             'settings' => $settings,
         ]);
+
+        $company->markKnowledgeUpdated();
+
+        if ($invalidKeyWarning) {
+            Notification::make()
+                ->title('تم حفظ بيانات المنشأة، ولكن مفتاح Gemini المدخل غير صالح')
+                ->body('يجب أن يبدأ مفتاح Google Gemini بـ AIza... أو AQ.... من Google AI Studio.')
+                ->warning()
+                ->send();
+            return;
+        }
 
         Notification::make()
             ->title('تم حفظ وتحديث بيانات المنشأة بنجاح!')

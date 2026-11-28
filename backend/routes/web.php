@@ -22,42 +22,36 @@ $handleLocaleSwitch = function (string $locale) {
 Route::get('/switch-language/{locale}', $handleLocaleSwitch)->name('switch-language');
 Route::get('/company/switch-language/{locale}', $handleLocaleSwitch)->name('company.switch-language');
 Route::get('/admin/switch-language/{locale}', $handleLocaleSwitch)->name('admin.switch-language');
-Route::get('/admin/switch-company/{company}', function (\App\Models\Company $company) {
+$frontendBase = fn (): string => rtrim((string) env('FRONTEND_URL', 'http://localhost:3000'), '/');
+
+Route::get('/admin/switch-company/{company}', function (\App\Models\Company $company) use ($frontendBase) {
     $user = auth()->user();
     if (! $user || ! $user->isSuperAdmin()) {
         return redirect('/admin/login');
     }
     $user->update(['company_id' => $company->id]);
-    return redirect('/company');
+    return redirect()->away($frontendBase() . '/company');
 })->middleware(['web', 'auth'])->name('admin.switch-company');
 
-Route::get('/company/instagram/oauth/callback', function (\Illuminate\Http\Request $request) {
+Route::get('/company/instagram/oauth/callback', function (\Illuminate\Http\Request $request) use ($frontendBase) {
+    $targetBase = $frontendBase() . '/company/channels/instagram';
     $error = $request->query('error_description') ?? $request->query('error');
     if ($error) {
-        \Filament\Notifications\Notification::make()
-            ->title('تعذر إتمام ربط انستقرام')
-            ->body((string) $error)
-            ->danger()
-            ->send();
-        return redirect('/company/instagram-connection');
+        return redirect()->away($targetBase . '?oauth=error&message=' . urlencode((string) $error));
     }
 
     $code = (string) $request->query('code', '');
     $state = (string) $request->query('state', '');
 
     if ($code === '' || $state === '') {
-        return redirect('/company/instagram-connection');
+        return redirect()->away($targetBase);
     }
 
     try {
         $decoded = json_decode(\Illuminate\Support\Facades\Crypt::decryptString($state), true);
         $companyId = $decoded['company_id'] ?? null;
-    } catch (\Throwable $e) {
-        \Filament\Notifications\Notification::make()
-            ->title('انتهت صلاحية جلسة الربط، يرجى المحاولة مجدداً')
-            ->danger()
-            ->send();
-        return redirect('/company/instagram-connection');
+    } catch (\Throwable) {
+        return redirect()->away($targetBase . '?oauth=error&message=' . urlencode('انتهت صلاحية جلسة الربط، يرجى المحاولة مجدداً'));
     }
 
     $user = auth()->user();
@@ -78,49 +72,31 @@ Route::get('/company/instagram/oauth/callback', function (\Illuminate\Http\Reque
             'instagram_connected_at' => now(),
         ]);
 
-        \Filament\Notifications\Notification::make()
-            ->title('تم ربط حساب انستقرام بنجاح! 🎉')
-            ->body('الحساب المرتبط: @' . ($res['username'] ?? $res['account_id']))
-            ->success()
-            ->send();
-    } else {
-        \Filament\Notifications\Notification::make()
-            ->title('فشل تبديل رمز الدخول مع انستقرام')
-            ->body($res['error'] ?? 'يرجى المحاولة مرة أخرى.')
-            ->danger()
-            ->send();
+        return redirect()->away($targetBase . '?oauth=success');
     }
 
-    return redirect('/company/instagram-connection');
-})->middleware(['web', 'auth'])->name('company.instagram.oauth.callback');
+    return redirect()->away($targetBase . '?oauth=error&message=' . urlencode((string) ($res['error'] ?? 'يرجى المحاولة مرة أخرى.')));
+})->name('company.instagram.oauth.callback');
 
-Route::get('/company/messenger/oauth/callback', function (\Illuminate\Http\Request $request) {
+Route::get('/company/messenger/oauth/callback', function (\Illuminate\Http\Request $request) use ($frontendBase) {
+    $targetBase = $frontendBase() . '/company/channels/messenger';
     $error = $request->query('error_description') ?? $request->query('error');
     if ($error) {
-        \Filament\Notifications\Notification::make()
-            ->title('تعذر إتمام ربط ماسنجر فيسبوك')
-            ->body((string) $error)
-            ->danger()
-            ->send();
-        return redirect('/company/messenger-connection');
+        return redirect()->away($targetBase . '?oauth=error&message=' . urlencode((string) $error));
     }
 
     $code = (string) $request->query('code', '');
     $state = (string) $request->query('state', '');
 
     if ($code === '' || $state === '') {
-        return redirect('/company/messenger-connection');
+        return redirect()->away($targetBase);
     }
 
     try {
         $decoded = json_decode(\Illuminate\Support\Facades\Crypt::decryptString($state), true);
         $companyId = $decoded['company_id'] ?? null;
-    } catch (\Throwable $e) {
-        \Filament\Notifications\Notification::make()
-            ->title('انتهت صلاحية جلسة الربط، يرجى المحاولة مجدداً')
-            ->danger()
-            ->send();
-        return redirect('/company/messenger-connection');
+    } catch (\Throwable) {
+        return redirect()->away($targetBase . '?oauth=error&message=' . urlencode('انتهت صلاحية جلسة الربط، يرجى المحاولة مجدداً'));
     }
 
     $user = auth()->user();
@@ -141,20 +117,17 @@ Route::get('/company/messenger/oauth/callback', function (\Illuminate\Http\Reque
             'messenger_connected_at' => now(),
         ]);
 
-        \Filament\Notifications\Notification::make()
-            ->title('تم ربط صفحة ماسنجر فيسبوك بنجاح! 🎉')
-            ->body('الصفحة المرتبطة: ' . ($res['page_name'] ?? $res['page_id']))
-            ->success()
-            ->send();
-    } else {
-        \Filament\Notifications\Notification::make()
-            ->title('فشل تبديل رمز الدخول مع فيسبوك')
-            ->body($res['error'] ?? 'يرجى المحاولة مرة أخرى.')
-            ->danger()
-            ->send();
+        return redirect()->away($targetBase . '?oauth=success');
     }
 
-    return redirect('/company/messenger-connection');
-})->middleware(['web', 'auth'])->name('company.messenger.oauth.callback');
+    return redirect()->away($targetBase . '?oauth=error&message=' . urlencode((string) ($res['error'] ?? 'يرجى المحاولة مرة أخرى.')));
+})->name('company.messenger.oauth.callback');
+
+// Phase 1: Redirect legacy Filament /company paths to the standalone Nuxt 4 Company Dashboard
+Route::get('/company/login', fn () => redirect()->away($frontendBase() . '/login'));
+Route::get('/company/{any?}', function (?string $any = null) use ($frontendBase) {
+    $suffix = $any ? ('/company/' . ltrim($any, '/')) : '/company';
+    return redirect()->away($frontendBase() . $suffix);
+})->where('any', '.*');
 
 

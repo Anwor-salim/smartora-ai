@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Company;
+use App\Models\Conversation;
 use App\Services\AiChatService;
 use App\Services\InstagramService;
 use App\Services\MessengerService;
@@ -674,8 +675,28 @@ class WebhookController extends Controller
         // Always reply via the exact company's WAHA session
         $replySession = $incomingSession ?: $company->getWahaSessionName();
 
+        $rawCustomerName = $request->input('customer_name')
+            ?? ($payload['pushName'] ?? ($payload['_data']['pushName'] ?? null));
+        $customerName = is_string($rawCustomerName)
+            ? trim((string) preg_replace('/^~+|~+$/u', '', trim($rawCustomerName)))
+            : null;
+        if ($customerName === '') {
+            $customerName = null;
+        }
+
         // Process message through AI Multi-tenant Engine
-        $result = $this->aiChatService->handleCustomerMessage($company, $customerPhone, $messageText);
+        $result = $this->aiChatService->handleCustomerMessage($company, $customerPhone, $messageText, 'whatsapp', $customerName);
+
+        if (!empty($result['conversation_id']) && $customerChatId !== '') {
+            $conv = Conversation::find((int) $result['conversation_id']);
+            if ($conv) {
+                $ctx = is_array($conv->context_data) ? $conv->context_data : [];
+                if (($ctx['whatsapp_chat_id'] ?? null) !== $customerChatId) {
+                    $ctx['whatsapp_chat_id'] = $customerChatId;
+                    $conv->update(['context_data' => $ctx]);
+                }
+            }
+        }
 
         $sent = null;
         if ($autoSendViaWaha && !empty($result['reply'])) {
@@ -845,6 +866,20 @@ class WebhookController extends Controller
 
         $remoteJid = (string) ($payload['_data']['key']['remoteJid'] ?? $payload['from'] ?? '');
         $remoteJidAlt = (string) ($payload['_data']['key']['remoteJidAlt'] ?? '');
+        $payloadFrom = (string) ($payload['from'] ?? '');
+        $requestFrom = (string) ($request->input('from') ?? '');
+        $rawFrom = (string) ($request->input('raw_from') ?? ($payloadFrom !== '' ? $payloadFrom : $remoteJid));
+
+        $isPhoneJid = fn (string $jid): bool => str_contains($jid, '@s.whatsapp.net') || str_contains($jid, '@c.us');
+        $isLidJid = fn (string $jid): bool => str_contains($jid, '@lid');
+
+        $phoneJid = '';
+        foreach ([$remoteJidAlt, $remoteJid, $payloadFrom, $requestFrom] as $candidate) {
+            if ($candidate !== '' && $isPhoneJid($candidate)) {
+                $phoneJid = $candidate;
+                break;
+            }
+        }
 
         $rawPhone = $request->input('customer_phone')
             ?? $request->input('phone')
@@ -852,29 +887,36 @@ class WebhookController extends Controller
             ?? $request->input('from');
 
         if (!$rawPhone) {
-            if ($remoteJidAlt !== '' && str_contains($remoteJidAlt, '@')) {
-                $rawPhone = $remoteJidAlt;
-            } elseif ($remoteJid !== '' && (str_contains($remoteJid, '@s.whatsapp.net') || str_contains($remoteJid, '@c.us'))) {
-                $rawPhone = $remoteJid;
-            } else {
-                $rawPhone = $payload['from'] ?? ($payload['sender'] ?? $remoteJid);
-            }
-        } elseif (is_string($rawPhone) && str_contains($rawPhone, '@lid') && $remoteJidAlt !== '') {
-            $rawPhone = $remoteJidAlt;
+            $rawPhone = $phoneJid !== '' ? $phoneJid : ($payloadFrom !== '' ? $payloadFrom : $remoteJid);
+        } elseif (is_string($rawPhone) && $isLidJid($rawPhone) && $phoneJid !== '') {
+            $rawPhone = $phoneJid;
         }
 
         $customerPhone = $this->normalizePhone((string) $rawPhone);
 
-        if (is_string($explicitChatId) && trim($explicitChatId) !== '') {
+        $lidSource = '';
+        foreach ([$rawFrom, $payloadFrom, $remoteJid, $requestFrom, is_string($explicitChatId) ? $explicitChatId : ''] as $candidate) {
+            if ($candidate !== '' && $isLidJid($candidate)) {
+                $lidSource = $candidate;
+                break;
+            }
+        }
+
+        $isLidOnly = $phoneJid === '' && $lidSource !== '';
+
+        if ($isLidOnly) {
+            $lidDigits = $this->normalizePhone($lidSource) ?: $customerPhone;
+            $customerChatId = $lidDigits !== '' ? ($lidDigits . '@lid') : $lidSource;
+        } elseif (is_string($explicitChatId) && trim($explicitChatId) !== '') {
             $customerChatId = trim($explicitChatId);
-        } elseif ($customerPhone !== '' && !str_contains((string) $rawPhone, '@lid')) {
+        } elseif ($customerPhone !== '') {
             $customerChatId = $customerPhone . '@c.us';
-        } elseif (!empty($payload['from'])) {
-            $customerChatId = (string) $payload['from'];
+        } elseif ($payloadFrom !== '') {
+            $customerChatId = $payloadFrom;
         } elseif ($remoteJid !== '') {
             $customerChatId = $remoteJid;
         } else {
-            $customerChatId = $customerPhone !== '' ? ($customerPhone . '@c.us') : '';
+            $customerChatId = '';
         }
 
         return [$customerPhone, $customerChatId];

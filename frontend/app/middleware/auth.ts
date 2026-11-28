@@ -1,8 +1,9 @@
-export default defineNuxtRouteMiddleware((to, from) => {
-  if (process.client) {
-    const token = localStorage.getItem('auth_token')
-    if (!token) {
-      return navigateTo('/auth/company')
-    }
+export default defineNuxtRouteMiddleware(async (to) => {
+  const { hydrateToken, fetchMe, isAuthenticated } = useAuth()
+  hydrateToken()
+
+  const user = await fetchMe()
+  if (!user || !isAuthenticated.value) {
+    return navigateTo(`/login?redirect=${encodeURIComponent(to.fullPath)}`)
   }
 })

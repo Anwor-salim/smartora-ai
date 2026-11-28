@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Company;
 use App\Models\Conversation;
+use App\Services\ChannelMessageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -354,5 +355,94 @@ class MultiTenantWhatsAppWebhookTest extends TestCase
 
         Http::assertNothingSent();
         $this->assertEquals(0, Conversation::count());
+    }
+
+    public function test_direct_waha_webhook_preserves_lid_chat_id_when_no_phone_number_exists_and_saves_for_outbound_notifications(): void
+    {
+        Http::fake([
+            '*/api/sendText' => Http::response(['id' => 'msg_lid_1'], 200),
+        ]);
+
+        $company = $this->createCompany([
+            'name' => 'عيادة الدكتور أحمد الكسادي',
+            'whatsapp_number' => '967778889990',
+            'settings' => ['greeting_message' => 'أهلاً بك في عيادة الدكتور أحمد الكسادي!'],
+        ]);
+
+        $session = 'company_' . $company->id;
+
+        $response = $this->postJson('/api/webhook/waha', [
+            'event' => 'message',
+            'session' => $session,
+            'me' => ['id' => '967778889990@c.us'],
+            'payload' => [
+                'from' => '177172316713046@lid',
+                'pushName' => '~Manar',
+                'fromMe' => false,
+                'body' => 'السلام عليكم',
+                '_data' => [
+                    'key' => [
+                        'remoteJid' => '177172316713046@lid',
+                        'fromMe' => false,
+                    ],
+                ],
+            ],
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('sent', true)
+            ->assertJsonPath('customer_phone', '177172316713046')
+            ->assertJsonPath('customer_chat_id', '177172316713046@lid');
+
+        Http::assertSent(function ($request) use ($session) {
+            return str_ends_with($request->url(), '/api/sendText')
+                && $request['session'] === $session
+                && $request['chatId'] === '177172316713046@lid';
+        });
+
+        $conversation = Conversation::where('company_id', $company->id)
+            ->where('customer_phone', '177172316713046')
+            ->first();
+        $this->assertNotNull($conversation);
+        $this->assertEquals('Manar', $conversation->customer_name);
+        $this->assertEquals('177172316713046@lid', $conversation->context_data['whatsapp_chat_id'] ?? null);
+
+        app(ChannelMessageService::class)->sendToCustomer(
+            $company,
+            '177172316713046',
+            'تم تأكيد موعدك',
+            'whatsapp',
+            $conversation
+        );
+
+        Http::assertSent(function ($request) use ($session) {
+            return str_ends_with($request->url(), '/api/sendText')
+                && $request['session'] === $session
+                && $request['chatId'] === '177172316713046@lid'
+                && $request['text'] === 'تم تأكيد موعدك';
+        });
+    }
+
+    public function test_n8n_whatsapp_webhook_corrects_forged_cus_when_raw_from_is_lid(): void
+    {
+        $company = $this->createCompany([
+            'name' => 'عيادة الدكتور أحمد الكسادي',
+            'whatsapp_number' => '967778889990',
+        ]);
+
+        $response = $this->postJson('/api/webhook/whatsapp', [
+            'session' => 'company_' . $company->id,
+            'company_whatsapp' => '967778889990',
+            'customer_phone' => '177172316713046',
+            'customer_chatId' => '177172316713046@c.us',
+            'raw_from' => '177172316713046@lid',
+            'message' => 'السلام عليكم',
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('customer_phone', '177172316713046')
+            ->assertJsonPath('customer_chat_id', '177172316713046@lid');
     }
 }

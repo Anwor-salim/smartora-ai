@@ -1,524 +1,274 @@
 <template>
-  <div class="company-layout font-sans bg-gray-50 min-h-screen dir-rtl">
-    <!-- Header -->
-    <header class="company-header glass-panel sticky top-0 z-50">
-      <div class="container mx-auto px-4 h-20 flex items-center justify-between">
-        
-        <!-- Logo -->
-        <NuxtLink to="/company" class="flex items-center gap-2 group style-none">
-          <div class="w-10 h-10 rounded-xl bg-teal-100 flex items-center justify-center group-hover-bg transition-colors">
-            <span class="text-xl">🏢</span>
+  <div class="min-h-screen bg-[#F6F7F9] text-[#181A1F] flex">
+    <!-- Mobile Backdrop -->
+    <div
+      v-if="mobileMenuOpen"
+      class="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-xs lg:hidden"
+      @click="mobileMenuOpen = false"
+    ></div>
+
+    <!-- Dark Charcoal Sidebar (وقت اللزوم style) -->
+    <aside
+      class="fixed inset-y-0 z-50 flex w-64 shrink-0 flex-col bg-[#1F2227] text-slate-300 transition-transform duration-200 lg:static lg:translate-x-0"
+      :class="[
+        locale === 'ar' ? 'right-0' : 'left-0',
+        mobileMenuOpen
+          ? 'translate-x-0'
+          : (locale === 'ar' ? 'translate-x-full lg:translate-x-0' : '-translate-x-full lg:translate-x-0')
+      ]"
+    >
+      <!-- Sidebar Brand -->
+      <div class="flex h-16 items-center justify-between border-b border-white/10 px-4">
+        <NuxtLink to="/company" class="flex items-center gap-2.5 min-w-0">
+          <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#F5B700] text-[#181A1F] shadow-sm">
+            <Zap class="h-5 w-5 fill-current" />
           </div>
-          <span class="font-bold text-xl text-teal-800">بوابة الشركات</span>
+          <div class="min-w-0">
+            <p class="truncate text-sm font-black tracking-tight text-white">SmartOra AI</p>
+            <p class="truncate text-[11px] font-medium text-slate-400">
+              {{ activeCompany?.name || 'لوحة المنشأة' }}
+            </p>
+          </div>
         </NuxtLink>
 
-        <!-- Navigation & Actions -->
-        <div class="flex items-center gap-6">
-          
-          <!-- Navigation -->
-          <nav class="hidden md:flex items-center gap-4">
-            <NuxtLink to="/company" class="nav-link" exact-active-class="nav-active">الرئيسية</NuxtLink>
-            <NuxtLink to="/company/orders" class="nav-link" active-class="nav-active">الطلبات</NuxtLink>
-            <NuxtLink to="/company/products" class="nav-link" active-class="nav-active">المنتجات</NuxtLink>
-            <NuxtLink to="/company/invoices" class="nav-link" active-class="nav-active">الفواتير</NuxtLink>
-          </nav>
+        <button
+          type="button"
+          class="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white lg:hidden"
+          @click="mobileMenuOpen = false"
+        >
+          <X class="h-5 w-5" />
+        </button>
+      </div>
 
-          <div class="h-8 w-px bg-gray-200 hidden md:block"></div>
+      <!-- Navigation List -->
+      <nav class="sidebar-scroll flex-1 space-y-1 overflow-y-auto px-3 py-4">
+        <NuxtLink
+          v-for="item in navItems"
+          :key="item.to"
+          :to="item.to"
+          class="flex items-center justify-between rounded-xl px-3.5 py-2.5 text-sm transition duration-150"
+          :class="isActiveRoute(item.to, item.exact)
+            ? 'bg-[#F5B700] font-extrabold text-[#181A1F] shadow-sm'
+            : 'font-medium text-slate-300 hover:bg-[#2A2E35] hover:text-white'"
+        >
+          <span class="flex items-center gap-3 min-w-0">
+            <component :is="item.icon" class="h-4.5 w-4.5 shrink-0" />
+            <span class="truncate">{{ item.label }}</span>
+          </span>
+          <span
+            v-if="item.badge && item.badge > 0"
+            class="rounded-full px-2 py-0.5 text-[11px] font-extrabold"
+            :class="isActiveRoute(item.to, item.exact)
+              ? 'bg-[#181A1F] text-[#F5B700]'
+              : 'bg-[#F5B700]/20 text-[#F5B700]'"
+          >
+            {{ item.badge }}
+          </span>
+        </NuxtLink>
+      </nav>
 
-          <!-- Notification Bell -->
-          <div class="relative" ref="notificationRef">
-            <button @click="toggleNotifications" class="bell-btn">
-              <span class="text-xl">🔔</span>
-              <span v-if="pendingOrders.length > 0" class="badge animate-pulse">
-                {{ pendingOrders.length }}
-              </span>
-            </button>
+      <!-- Bottom Pinned Settings -->
+      <div class="border-t border-white/10 p-3 space-y-1">
+        <NuxtLink
+          to="/company/settings"
+          class="flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm transition duration-150"
+          :class="isActiveRoute('/company/settings', false)
+            ? 'bg-[#F5B700] font-extrabold text-[#181A1F] shadow-sm'
+            : 'font-medium text-slate-300 hover:bg-[#2A2E35] hover:text-white'"
+        >
+          <Settings class="h-4.5 w-4.5 shrink-0" />
+          <span>{{ t('settings') }}</span>
+        </NuxtLink>
+      </div>
+    </aside>
 
-            <!-- Dropdown -->
-            <transition name="dropdown">
-              <div v-if="showNotifications" class="dropdown-menu glass-panel">
-                <div class="p-4 border-b border-gray-100 flex justify-between items-center">
-                  <h3 class="font-bold text-gray-800 m-0">التنبيهات</h3>
-                  <span class="text-xs badge-teal">{{ pendingOrders.length }} جديد</span>
-                </div>
-                
-                <div class="p-2 bg-gray-50 border-b border-gray-100 mb-2">
-                  <span class="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">تنبيهات النظام</span>
-                  <!-- System Notification Demo -->
-                  <div class="flex items-center gap-2 p-2 bg-white rounded-lg border border-gray-100">
-                    <span class="text-yellow-500 text-lg">⚠️</span>
-                    <p class="text-xs font-semibold text-gray-700 m-0">تنبيه: اقترب نفاذ مخزون "بانادول إكسترا"</p>
-                  </div>
-                </div>
-
-                <div class="notif-body">
-                  <div v-if="pendingOrders.length === 0" class="empty-notif">
-                    <span class="text-3xl block mb-2">📭</span>
-                    لا يوجد طلبات جديدة
-                  </div>
-                  
-                  <div v-for="order in pendingOrders" :key="order.id" class="notification-item">
-                    <div class="flex-1">
-                      <span class="text-[10px] font-bold text-teal-600 bg-teal-50 px-2 py-1 rounded inline-block mb-1">طلب اعتماد مستعجل</span>
-                      <p class="font-semibold text-gray-800 m-0">{{ order.pharmacyName }}</p>
-                      <p class="text-sm text-gray-500 m-0 mt-1">المطلوب: {{ order.items }} منتج</p>
-                      <p class="text-xs font-black text-teal-700 m-0 mt-1">{{ order.total.toFixed(2) }} ريال</p>
-                    </div>
-                    <button @click="openPendingModal(order)" class="view-btn">
-                      مراجعة
-                    </button>
-                  </div>
-                </div>
-                
-                <div class="p-2 border-t border-gray-100 text-center">
-                  <NuxtLink to="/company/orders" class="text-sm link-all">إدارة كل الطلبات</NuxtLink>
-                </div>
-              </div>
-            </transition>
-          </div>
-
-          <!-- User Profile -->
-          <NuxtLink to="/company/profile" class="user-avatar" title="إعدادات الشركة">
-            <span class="text-gray-500 text-sm">🏢</span>
-          </NuxtLink>
-
-          <!-- Logout Button -->
-          <button @click="handleLogout" class="logout-btn" title="تسجيل الخروج">
-            <span class="text-red-500 text-xl">🚪</span>
+    <!-- Main Column -->
+    <div class="flex min-w-0 flex-1 flex-col">
+      <!-- White Top Header -->
+      <header class="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-gray-100 bg-white px-4 sm:px-6 lg:px-8">
+        <!-- Mobile Menu Toggle + Active Company Pill -->
+        <div class="flex items-center gap-3">
+          <button
+            type="button"
+            class="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white text-slate-700 hover:bg-slate-50 lg:hidden"
+            @click="mobileMenuOpen = true"
+          >
+            <Menu class="h-5 w-5" />
           </button>
 
+          <div v-if="isSuperAdmin && availableCompanies.length" class="hidden sm:flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-1.5 text-xs">
+            <span class="font-bold text-amber-800">وضع المشرف:</span>
+            <select
+              :value="activeCompany?.id"
+              class="bg-transparent font-extrabold text-[#181A1F] focus:outline-none"
+              @change="onSwitchCompany"
+            >
+              <option v-for="c in availableCompanies" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </select>
+          </div>
         </div>
-      </div>
-    </header>
 
-    <!-- Modal for Pending Order Review -->
-    <transition name="fade">
-      <div v-if="selectedOrder" class="modal-overlay" @click.self="closeModal">
-        <div class="modal-content invoice-style">
-          
-          <div class="modal-header">
-            <h2>مراجعة طلب جديد</h2>
-            <button @click="closeModal" class="btn-close">×</button>
-          </div>
+        <!-- User Profile & Language Toggle -->
+        <div class="flex items-center gap-3">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
+            @click="toggleLocale"
+          >
+            <Globe class="h-4 w-4 text-slate-500" />
+            <span>{{ t('switchLangLabel') }}</span>
+          </button>
 
-          <div class="modal-body">
-            <div class="inv-top">
-              <div>
-                <p class="meta-label">مقدم الطلب</p>
-                <h3 class="pharma-name">{{ selectedOrder.pharmacyName }}</h3>
-                <p class="meta-value">📍 {{ selectedOrder.pharmacyLocation }}</p>
+          <!-- User Dropdown -->
+          <div class="relative">
+            <button
+              type="button"
+              class="flex items-center gap-2.5 rounded-2xl border border-gray-100 bg-slate-50/60 px-2.5 py-1.5 transition hover:bg-slate-100"
+              @click="profileMenuOpen = !profileMenuOpen"
+            >
+              <div class="flex h-9 w-9 items-center justify-center rounded-full bg-[#F5B700] text-sm font-black text-[#181A1F]">
+                {{ userInitial }}
               </div>
-              <div class="text-left">
-                <p class="meta-label">تاريخ الطلب</p>
-                <p class="meta-value">{{ new Date(selectedOrder.date).toLocaleDateString('ar-SA') }}</p>
-                <p class="meta-label mt-2">رقم المرجع</p>
-                <p class="fw-bold">{{ selectedOrder.id }}</p>
+              <div class="hidden text-start sm:block">
+                <p class="max-w-[140px] truncate text-xs font-extrabold text-[#181A1F]">{{ user?.name || 'مدير المنشأة' }}</p>
+                <p class="max-w-[140px] truncate text-[11px] text-slate-400">{{ user?.email }}</p>
               </div>
+              <ChevronDown class="h-4 w-4 text-slate-400" />
+            </button>
+
+            <div
+              v-if="profileMenuOpen"
+              class="absolute top-full mt-2 w-60 rounded-2xl border border-gray-100 bg-white p-2 shadow-xl"
+              :class="locale === 'ar' ? 'left-0' : 'right-0'"
+            >
+              <div class="border-b border-gray-100 px-3 py-2">
+                <p class="truncate text-xs font-extrabold text-[#181A1F]">{{ activeCompany?.name }}</p>
+                <p class="truncate text-[11px] text-slate-400">{{ user?.email }}</p>
+              </div>
+
+              <div v-if="isSuperAdmin && availableCompanies.length" class="border-b border-gray-100 p-2 sm:hidden">
+                <label class="mb-1 block text-[11px] font-bold text-slate-500">تبديل المنشأة</label>
+                <select
+                  :value="activeCompany?.id"
+                  class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-xs font-bold"
+                  @change="onSwitchCompany"
+                >
+                  <option v-for="c in availableCompanies" :key="c.id" :value="c.id">{{ c.name }}</option>
+                </select>
+              </div>
+
+              <NuxtLink
+                to="/company/settings"
+                class="mt-1 flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                @click="profileMenuOpen = false"
+              >
+                <Settings class="h-4 w-4 text-slate-400" />
+                <span>{{ t('settings') }}</span>
+              </NuxtLink>
+              <button
+                type="button"
+                class="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50"
+                @click="logout"
+              >
+                <LogOut class="h-4 w-4" />
+                <span>{{ t('logout') }}</span>
+              </button>
             </div>
-
-            <div class="inv-table-wrapper">
-              <table class="inv-table">
-                <thead>
-                  <tr>
-                    <th>الصنف الموصوف</th>
-                    <th class="text-center">الكمية</th>
-                    <th class="text-center">سعر الوحدة</th>
-                    <th class="text-left">الإجمالي</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="item in selectedOrder.orderItems" :key="item.id">
-                    <td>{{ item.name }}</td>
-                    <td class="text-center">{{ item.quantity }}</td>
-                    <td class="text-center">{{ item.unitPrice.toFixed(2) }} SAR</td>
-                    <td class="text-left fw-bold">{{ item.total.toFixed(2) }} SAR</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="inv-totals">
-              <div class="tot-row">
-                <span>المجموع والتكلفة:</span>
-                <span>{{ selectedOrder.subTotal?.toFixed(2) || '0.00' }} SAR</span>
-              </div>
-              <div class="tot-row">
-                <span>ضريبة القيمة المضافة (15%):</span>
-                <span>{{ selectedOrder.tax?.toFixed(2) || '0.00' }} SAR</span>
-              </div>
-              <div class="tot-row mb-0 grand-tot">
-                <span>المطلوب دفعه للإعتماد:</span>
-                <span class="text-teal-700">{{ selectedOrder.total.toFixed(2) }} SAR</span>
-              </div>
-            </div>
           </div>
-
-          <div class="modal-footer">
-            <button @click="handleReject" class="btn-reject">رفض الطلب ✕</button>
-            <button @click="handleApprove" class="btn-approve">قبول الطلب وتجهيزه ✓</button>
-          </div>
-
         </div>
-      </div>
-    </transition>
+      </header>
 
-    <!-- Page Content -->
-    <main class="page-content">
-      <slot />
-    </main>
-
-    <!-- Footer -->
-    <footer class="company-footer bg-white border-t border-gray-200 mt-auto py-6">
-      <div class="container mx-auto px-4 text-center">
-        <p class="text-gray-500 font-semibold text-sm m-0">
-          © {{ new Date().getFullYear() }} جميع الحقوق محفوظة لـ <span class="text-teal-700">رابط فارما</span>. منصة إدارة الشركات.
-        </p>
-      </div>
-    </footer>
+      <!-- Page Content Canvas -->
+      <main class="flex-1 p-4 sm:p-6 lg:p-8">
+        <div class="mx-auto max-w-[1380px]">
+          <slot />
+        </div>
+      </main>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { useOrders, type Order } from '~/composables/useOrders'
-import { useAuth } from '~/composables/useAuth'
+import {
+  LayoutDashboard,
+  CalendarCheck,
+  MessageSquare,
+  FileSpreadsheet,
+  SlidersHorizontal,
+  QrCode,
+  Instagram,
+  MessagesSquare,
+  Bot,
+  Settings,
+  Menu,
+  X,
+  Zap,
+  Globe,
+  ChevronDown,
+  LogOut,
+} from 'lucide-vue-next'
 
-const { pendingOrders, approveOrder, rejectOrder, fetchCompanyOrders } = useOrders()
-const { logout } = useAuth()
-const router = useRouter()
-const showNotifications = ref(false)
-const notificationRef = ref<HTMLElement | null>(null)
+const route = useRoute()
+const { user, activeCompany, isSuperAdmin, switchCompany, logout } = useAuth()
+const { locale, toggleLocale, t } = useLocale()
+const { request, extractErrorMessage } = useApi()
+const toast = useToast()
 
-const selectedOrder = ref<Order | null>(null)
+const mobileMenuOpen = ref(false)
+const profileMenuOpen = ref(false)
+const pendingAppointmentsCount = useState<number>('pending_appointments_badge', () => 0)
 
-const toggleNotifications = () => {
-  showNotifications.value = !showNotifications.value
+const availableCompanies = computed(() => user.value?.available_companies || [])
+const userInitial = computed(() => {
+  const name = (user.value?.name || 'س').trim()
+  return name.charAt(0).toUpperCase()
+})
+
+const navItems = computed(() => [
+  { to: '/company', label: t('dashboard'), icon: LayoutDashboard, exact: true },
+  { to: '/company/appointments', label: t('appointments'), icon: CalendarCheck, exact: false, badge: pendingAppointmentsCount.value },
+  { to: '/company/conversations', label: t('conversations'), icon: MessageSquare, exact: false },
+  { to: '/company/knowledge', label: t('knowledge'), icon: FileSpreadsheet, exact: false },
+  { to: '/company/booking-settings', label: t('bookingSettings'), icon: SlidersHorizontal, exact: false },
+  { to: '/company/channels/whatsapp', label: t('whatsapp'), icon: QrCode, exact: false },
+  { to: '/company/channels/instagram', label: t('instagram'), icon: Instagram, exact: false },
+  { to: '/company/channels/messenger', label: t('messenger'), icon: MessagesSquare, exact: false },
+  { to: '/company/simulator', label: t('simulator'), icon: Bot, exact: false },
+])
+
+const isActiveRoute = (path: string, exact = false) => {
+  if (exact) return route.path === path
+  return route.path === path || route.path.startsWith(path + '/')
 }
 
-const handleLogout = async () => {
-  await logout()
-  router.push('/')
-}
-
-const openPendingModal = (order: Order) => {
-  selectedOrder.value = order
-  showNotifications.value = false
-}
-
-const closeModal = () => {
-  selectedOrder.value = null
-}
-
-const handleApprove = () => {
-  if (selectedOrder.value) {
-    approveOrder(selectedOrder.value.id)
-    closeModal()
+const refreshPendingBadge = async () => {
+  try {
+    const res = await request<any>('/company/appointments?status=pending')
+    pendingAppointmentsCount.value = res?.counts?.pending ?? 0
+  } catch {
+    // ignore badge fetch errors
   }
 }
 
-const handleReject = () => {
-  if (selectedOrder.value) {
-    if (confirm('تأكيد رفض هذا الطلب وإزالته نهائياً السيستم؟')) {
-      rejectOrder(selectedOrder.value.id)
-      closeModal()
-    }
+const onSwitchCompany = async (event: Event) => {
+  const id = Number((event.target as HTMLSelectElement).value)
+  if (!id) return
+  try {
+    const res = await switchCompany(id)
+    toast.success(res.message)
+    profileMenuOpen.value = false
+    window.location.reload()
+  } catch (err: any) {
+    toast.error('تعذر التبديل', extractErrorMessage(err))
   }
 }
 
-// Click outside to close implementation
-const handleClickOutside = (e: MouseEvent) => {
-  if (notificationRef.value && !notificationRef.value.contains(e.target as Node)) {
-    showNotifications.value = false
-  }
-}
-
-let pollingInterval: ReturnType<typeof setInterval> | null = null
+watch(() => route.fullPath, () => {
+  mobileMenuOpen.value = false
+  profileMenuOpen.value = false
+})
 
 onMounted(() => {
-  fetchCompanyOrders()
-  document.addEventListener('click', handleClickOutside)
-  
-  // تحديث تلقائي للإشعارات (Polling) كل 10 ثوانٍ
-  pollingInterval = setInterval(() => {
-    fetchCompanyOrders()
-  }, 10000)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-  if (pollingInterval) clearInterval(pollingInterval)
+  refreshPendingBadge()
 })
 </script>
-
-<style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap');
-
-.dir-rtl {
-  direction: rtl;
-  font-family: 'Tajawal', sans-serif;
-}
-
-.style-none { text-decoration: none; }
-.m-0 { margin: 0; }
-.mt-1 { margin-top: 0.25rem; }
-.mt-2 { margin-top: 0.5rem; }
-.mb-0 { margin-bottom: 0 !important; }
-.text-center { text-align: center; }
-.text-left { text-align: left; }
-.fw-bold { font-weight: 700; }
-.flex-1 { flex: 1; }
-.d-flex { display: flex; }
-
-.glass-panel {
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
-  box-shadow: 0 4px 15px -5px rgba(0, 0, 0, 0.05);
-}
-
-.nav-link {
-  font-weight: 700;
-  color: #64748b;
-  padding: 0.5rem 1rem;
-  border-radius: 8px;
-  text-decoration: none;
-  transition: all 0.2s ease;
-}
-
-.nav-link:hover {
-  color: #0f766e;
-  background: #f0fdf4;
-}
-
-.nav-active {
-  color: #0f766e;
-  background: #ecfdf5;
-}
-
-.bell-btn {
-  position: relative;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: none;
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background 0.2s ease;
-}
-.bell-btn:hover { background: #f1f5f9; }
-
-.badge {
-  position: absolute;
-  top: 0;
-  right: 0;
-  background: #ef4444;
-  color: white;
-  font-size: 0.7rem;
-  font-weight: 800;
-  height: 18px;
-  min-width: 18px;
-  border-radius: 9px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 2px solid white;
-}
-
-.animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
-
-.user-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: #e2e8f0;
-  border: 2px solid white;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.logout-btn {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.logout-btn:hover { background: #fecaca; }
-
-/* Dropdown */
-.dropdown-menu {
-  position: absolute;
-  top: calc(100% + 5px);
-  left: 0;
-  width: 340px;
-  border-radius: 16px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.15);
-  transform-origin: top left;
-  z-index: 50;
-}
-
-.dropdown-enter-active, .dropdown-leave-active { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
-.dropdown-enter-from, .dropdown-leave-to { opacity: 0; transform: scale(0.95) translateY(-5px); }
-
-.badge-teal { background: #ccfbf1; color: #0f766e; padding: 0.2rem 0.6rem; border-radius: 999px; font-weight: 800; }
-
-.notif-body { max-height: 350px; overflow-y: auto; }
-
-.empty-notif { padding: 2rem; text-align: center; color: #94a3b8; font-weight: 600; }
-
-.notification-item {
-  padding: 1.25rem 1rem;
-  border-bottom: 1px solid #f1f5f9;
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  transition: background 0.2s ease;
-}
-.notification-item:last-child { border-bottom: none; }
-.notification-item:hover { background: #f8fafc; }
-
-.view-btn {
-  background: #f1f5f9;
-  color: #0f766e;
-  border: 1px solid #ccfbf1;
-  padding: 0.5rem 1rem;
-  border-radius: 8px;
-  font-weight: 800;
-  font-size: 0.85rem;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-.view-btn:hover { background: #0f766e; color: white; transform: translateY(-1px); }
-
-.link-all { color: #0f766e; font-weight: 700; text-decoration: none; }
-.link-all:hover { text-decoration: underline; }
-
-/* Modal Styles */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(4px);
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
-}
-
-.fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
-
-.modal-content.invoice-style {
-  background: white;
-  border-radius: 24px;
-  width: 100%;
-  max-width: 650px;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-  overflow: hidden;
-}
-
-.modal-header {
-  padding: 1.5rem 2rem;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.modal-header h2 { margin: 0; font-size: 1.4rem; font-weight: 900; color: #0f172a; }
-.btn-close { background: transparent; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer; line-height: 1; margin-top: -5px; }
-.btn-close:hover { color: #dc2626; }
-
-.modal-body {
-  padding: 2rem;
-  overflow-y: auto;
-}
-
-.inv-top {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 2rem;
-}
-
-.meta-label { color: #94a3b8; font-size: 0.85rem; font-weight: 800; text-transform: uppercase; margin: 0 0 0.2rem; }
-.pharma-name { margin: 0 0 0.5rem; font-size: 1.4rem; font-weight: 900; color: #0f172a; }
-.meta-value { color: #475569; margin: 0; font-size: 0.95rem; }
-
-.inv-table-wrapper {
-  margin-bottom: 2rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.inv-table { width: 100%; border-collapse: collapse; }
-.inv-table th { background: #f8fafc; padding: 0.75rem 1rem; color: #64748b; font-weight: 800; font-size: 0.85rem; border-bottom: 1px solid #e2e8f0; }
-.inv-table td { padding: 1rem; border-bottom: 1px solid #f1f5f9; color: #1e293b; font-size: 0.95rem; }
-.inv-table tr:last-child td { border-bottom: none; }
-
-.inv-totals {
-  background: #f8fafc;
-  padding: 1.5rem;
-  border-radius: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.tot-row { display: flex; justify-content: space-between; color: #475569; font-weight: 600; font-size: 0.95rem; }
-.grand-tot { margin-top: 0.5rem; padding-top: 1rem; border-top: 1px dashed #cbd5e1; font-weight: 900; font-size: 1.1rem; color: #0f172a; }
-
-.modal-footer {
-  padding: 1.5rem 2rem;
-  background: white;
-  border-top: 1px solid #e2e8f0;
-  display: flex;
-  justify-content: flex-end;
-  gap: 1rem;
-}
-
-.btn-reject, .btn-approve {
-  padding: 0.85rem 1.5rem;
-  border-radius: 12px;
-  font-family: inherit;
-  font-weight: 800;
-  font-size: 1rem;
-  cursor: pointer;
-  border: none;
-  transition: all 0.2s ease;
-}
-
-.btn-reject {
-  background: #fef2f2;
-  color: #dc2626;
-}
-.btn-reject:hover { background: #fee2e2; transform: translateY(-1px); }
-
-.btn-approve {
-  background: linear-gradient(135deg, #0d9488, #14b8a6);
-  color: white;
-  box-shadow: 0 4px 10px rgba(13, 148, 136, 0.2);
-}
-.btn-approve:hover { transform: translateY(-2px); box-shadow: 0 6px 15px rgba(13, 148, 136, 0.3); }
-
-</style>

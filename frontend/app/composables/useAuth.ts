@@ -1,129 +1,144 @@
-import { ref } from 'vue'
+export interface AuthCompany {
+  id: number
+  name: string
+  slug?: string
+  status: string
+  whatsapp_number?: string | null
+  subscription_expires_at?: string | null
+  is_active: boolean
+}
+
+export interface AuthUser {
+  id: number
+  name: string
+  email: string
+  role: string
+  phone?: string | null
+  company_id: number | null
+  company: AuthCompany | null
+  available_companies?: Array<{ id: number; name: string; status: string }>
+}
 
 export const useAuth = () => {
-  const loading = ref(false)
+  const { request, extractErrorMessage } = useApi()
+
+  const token = useState<string | null>('auth_token', () => null)
+  const user = useState<AuthUser | null>('auth_user', () => null)
+  const loading = useState<boolean>('auth_loading', () => false)
+  const initialized = useState<boolean>('auth_initialized', () => false)
   const error = ref<string | null>(null)
-  
-  // Set your Laravel API URL here
-  const apiBaseUri = 'http://localhost:8000/api/v1/auth'
 
-  const registerCompany = async (payload: any) => {
+  const isAuthenticated = computed(() => Boolean(token.value && user.value))
+  const activeCompany = computed(() => user.value?.company ?? null)
+  const isSuperAdmin = computed(() => user.value?.role === 'super_admin')
+
+  const hydrateToken = () => {
+    if (process.client && !token.value) {
+      const saved = localStorage.getItem('auth_token')
+      if (saved) token.value = saved
+    }
+  }
+
+  const login = async (email: string, password: string) => {
     loading.value = true
     error.value = null
     try {
-      const response = await $fetch<any>(`${apiBaseUri}/register/company`, {
+      const res = await request<{ token: string; user: AuthUser; message: string }>('/auth/login', {
         method: 'POST',
-        body: payload
+        body: { email, password },
       })
-      
-      if (response && response.data && response.data.token) {
-        // Store token somewhere (localStorage or Nuxt state)
-        if (process.client) {
-          localStorage.setItem('auth_token', response.data.token)
-        }
-        return response.data
+
+      token.value = res.token
+      user.value = res.user
+      initialized.value = true
+
+      if (process.client) {
+        localStorage.setItem('auth_token', res.token)
       }
+
+      return res
     } catch (err: any) {
-      // Extract the first validation error message from Laravel's 422 response
-      const data = err.data || err.response?.data
-      if (data?.errors) {
-        const firstKey = Object.keys(data.errors)[0]
-        error.value = data.errors[firstKey][0]
-      } else {
-        error.value = data?.message || err.message || 'حدث خطأ في التسجيل'
-      }
+      error.value = extractErrorMessage(err, 'بيانات الدخول غير صحيحة')
       throw err
     } finally {
       loading.value = false
     }
   }
 
-  const registerPharmacy = async (payload: any) => {
-    loading.value = true
-    error.value = null
+  const fetchMe = async (force = false): Promise<AuthUser | null> => {
+    hydrateToken()
+    if (!token.value) {
+      initialized.value = true
+      user.value = null
+      return null
+    }
+    if (user.value && !force) {
+      initialized.value = true
+      return user.value
+    }
+
     try {
-      const response = await $fetch<any>(`${apiBaseUri}/register/pharmacy`, {
-        method: 'POST',
-        body: payload
-      })
-      
-      if (response && response.data && response.data.token) {
-        if (process.client) {
-          localStorage.setItem('auth_token', response.data.token)
-        }
-        return response.data
+      const res = await request<{ user: AuthUser }>('/auth/me')
+      user.value = res.user
+      initialized.value = true
+      return res.user
+    } catch {
+      token.value = null
+      user.value = null
+      initialized.value = true
+      if (process.client) {
+        localStorage.removeItem('auth_token')
       }
-    } catch (err: any) {
-      const data = err.data || err.response?.data
-      if (data?.errors) {
-        const firstKey = Object.keys(data.errors)[0]
-        error.value = data.errors[firstKey][0]
-      } else {
-        error.value = data?.message || err.message || 'حدث خطأ في التسجيل'
-      }
-      throw err
-    } finally {
-      loading.value = false
+      return null
     }
   }
 
-  const login = async (payload: any) => {
-    loading.value = true
-    error.value = null
-    try {
-      const response = await $fetch<any>(`${apiBaseUri}/login`, {
-        method: 'POST',
-        body: payload
-      })
-      
-      if (response && response.data && response.data.token) {
-        if (process.client) {
-          localStorage.setItem('auth_token', response.data.token)
-        }
-        return response.data
+  const switchCompany = async (companyId: number) => {
+    const res = await request<{ company: AuthCompany; message: string }>('/company/switch', {
+      method: 'POST',
+      body: { company_id: companyId },
+    })
+    if (user.value) {
+      user.value = {
+        ...user.value,
+        company_id: res.company.id,
+        company: res.company,
       }
-    } catch (err: any) {
-      const data = err.data || err.response?.data
-      if (data?.errors) {
-        const firstKey = Object.keys(data.errors)[0]
-        error.value = data.errors[firstKey][0]
-      } else {
-        error.value = data?.message || err.message || 'بيانات الدخول غير صحيحة'
-      }
-      throw err
-    } finally {
-      loading.value = false
     }
+    return res
   }
 
   const logout = async () => {
     try {
-      if (process.client) {
-        const token = localStorage.getItem('auth_token')
-        if (token) {
-          await $fetch<any>(`${apiBaseUri}/logout`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`
-            }
-          })
-        }
+      if (token.value) {
+        await request('/auth/logout', { method: 'POST' })
       }
-    } catch (err) {
-      console.warn('Backend logout failed or token already invalid', err)
+    } catch {
+      // ignore invalid token errors during logout
     } finally {
+      token.value = null
+      user.value = null
+      initialized.value = true
       if (process.client) {
         localStorage.removeItem('auth_token')
       }
+      await navigateTo('/login')
     }
   }
 
   return {
+    token,
+    user,
     loading,
     error,
-    registerCompany,
-    registerPharmacy,
+    initialized,
+    isAuthenticated,
+    activeCompany,
+    isSuperAdmin,
+    hydrateToken,
     login,
-    logout
+    fetchMe,
+    switchCompany,
+    logout,
   }
 }

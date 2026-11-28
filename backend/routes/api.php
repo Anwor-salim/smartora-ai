@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CompanyChannelsController;
 use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\WebhookController;
 use Illuminate\Support\Facades\Route;
@@ -75,12 +76,57 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Company Portal Routes
     Route::prefix('company')->group(function () {
+        Route::get('/dashboard', [CompanyController::class, 'dashboard']);
+        Route::post('/switch', [CompanyController::class, 'switchCompany']);
+
         Route::get('/profile', [CompanyController::class, 'profile']);
         Route::put('/profile', [CompanyController::class, 'updateProfile']);
+
         Route::get('/documents', [CompanyController::class, 'documents']);
         Route::post('/documents/upload', [CompanyController::class, 'uploadDocument']);
+        Route::post('/documents/{id}/reparse', [CompanyController::class, 'reparseDocument']);
         Route::delete('/documents/{id}', [CompanyController::class, 'deleteDocument']);
+
+        Route::get('/appointments', [CompanyController::class, 'appointments']);
+        Route::get('/appointments/{id}', [CompanyController::class, 'appointmentDetail']);
+        Route::post('/appointments/{id}/approve', [CompanyController::class, 'approveAppointment']);
+        Route::post('/appointments/{id}/reject', [CompanyController::class, 'rejectAppointment']);
+        Route::post('/appointments/{id}/cancel', [CompanyController::class, 'cancelAppointment']);
+        Route::post('/appointments/sync-sheets', [CompanyController::class, 'syncAppointmentSheets']);
+
+        Route::get('/booking-settings', [CompanyController::class, 'bookingSettings']);
+        Route::put('/booking-settings', [CompanyController::class, 'updateBookingSettings']);
+        Route::post('/booking-settings/sync-headers', [CompanyController::class, 'syncBookingHeaders']);
+
         Route::get('/conversations', [CompanyController::class, 'conversations']);
         Route::get('/conversations/{id}', [CompanyController::class, 'conversationDetail']);
+        Route::post('/conversations/{id}/toggle-pause', [CompanyController::class, 'toggleConversationPause']);
+        Route::post('/conversations/{id}/reset-context', [CompanyController::class, 'resetConversationContext']);
+
+        Route::post('/simulator/send', [CompanyController::class, 'simulatorSend']);
+        Route::post('/simulator/reset', [CompanyController::class, 'simulatorReset']);
+
+        Route::prefix('channels')->group(function () {
+            Route::get('/whatsapp', [CompanyChannelsController::class, 'whatsappStatus']);
+            Route::post('/whatsapp/provider', [CompanyChannelsController::class, 'switchWhatsappProvider']);
+            Route::post('/whatsapp/qr', [CompanyChannelsController::class, 'generateWhatsappQr']);
+            Route::post('/whatsapp/check', [CompanyChannelsController::class, 'checkWhatsappConnection']);
+            Route::post('/whatsapp/disconnect', [CompanyChannelsController::class, 'disconnectWhatsapp']);
+            Route::put('/whatsapp/numbers', [CompanyChannelsController::class, 'saveWhatsappNumbers']);
+            Route::post('/whatsapp/meta', [CompanyChannelsController::class, 'saveMetaCredentials']);
+            Route::post('/whatsapp/test', [CompanyChannelsController::class, 'sendWhatsappTestMessage']);
+
+            Route::get('/instagram', [CompanyChannelsController::class, 'instagramStatus']);
+            Route::post('/instagram/credentials', [CompanyChannelsController::class, 'saveInstagramCredentials']);
+            Route::post('/instagram/disconnect', [CompanyChannelsController::class, 'disconnectInstagram']);
+            Route::put('/instagram/comments', [CompanyChannelsController::class, 'saveInstagramComments']);
+            Route::post('/instagram/simulate', [CompanyChannelsController::class, 'simulateInstagramReply']);
+
+            Route::get('/messenger', [CompanyChannelsController::class, 'messengerStatus']);
+            Route::post('/messenger/credentials', [CompanyChannelsController::class, 'saveMessengerCredentials']);
+            Route::post('/messenger/disconnect', [CompanyChannelsController::class, 'disconnectMessenger']);
+            Route::put('/messenger/comments', [CompanyChannelsController::class, 'saveMessengerComments']);
+            Route::post('/messenger/simulate', [CompanyChannelsController::class, 'simulateMessengerReply']);
+        });
     });
 });

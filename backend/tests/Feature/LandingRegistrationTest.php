@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\Company;
 use App\Models\SystemNotification;
 use App\Models\User;
-use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -66,8 +65,10 @@ class LandingRegistrationTest extends TestCase
         $this->assertSame('inactive', $user->status);
         $this->assertSame($company->id, $user->company_id);
 
-        $companyPanel = Filament::getPanel('company');
-        $this->assertFalse($user->canAccessPanel($companyPanel));
+        $this->postJson('/api/auth/login', [
+            'email' => 'khaled@alofoq.com',
+            'password' => 'secret123',
+        ])->assertStatus(403);
 
         $notification = SystemNotification::where('company_id', $company->id)->first();
         $this->assertNotNull($notification);
@@ -85,7 +86,12 @@ class LandingRegistrationTest extends TestCase
         $user->refresh();
 
         $this->assertTrue($company->isSubscriptionActive());
-        $this->assertTrue($user->canAccessPanel($companyPanel));
+
+        $this->postJson('/api/auth/login', [
+            'email' => 'khaled@alofoq.com',
+            'password' => 'secret123',
+        ])->assertOk()
+            ->assertJsonStructure(['token', 'user' => ['id', 'email', 'company' => ['id', 'name']]]);
     }
 
     public function test_duplicate_email_or_whatsapp_number_is_rejected(): void

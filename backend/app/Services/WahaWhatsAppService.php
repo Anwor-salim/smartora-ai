@@ -272,7 +272,12 @@ class WahaWhatsAppService
                 'text' => $text,
             ]);
 
-            return $response->successful();
+            if ($response->successful()) {
+                return true;
+            }
+
+            Log::warning("WAHA sendText failed for {$cleanChatId} on session {$session}: HTTP {$response->status()} " . $response->body());
+            return false;
         } catch (\Throwable $e) {
             Log::error("WAHA sendText failed: " . $e->getMessage());
             return false;

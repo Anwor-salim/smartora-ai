@@ -53,10 +53,14 @@ class Conversation extends Model
     /**
      * Retrieve recent conversation messages in strict chronological order.
      */
-    public function getRecentHistory(int $limit = 12, int $windowHours = 24, ?int $excludeMessageId = null): Collection
+    public function getRecentHistory(int $limit = 12, int $windowHours = 24, ?int $excludeMessageId = null, ?int $minMessageId = null): Collection
     {
         $query = $this->messages()
             ->where('created_at', '>=', Carbon::now()->subHours($windowHours));
+
+        if ($minMessageId !== null && $minMessageId > 0) {
+            $query->where('id', '>', $minMessageId);
+        }
 
         if ($excludeMessageId !== null) {
             $query->where('id', '!=', $excludeMessageId);

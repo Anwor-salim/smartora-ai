@@ -197,4 +197,57 @@ class Company extends Model
     {
         return $this->hasMany(SystemNotification::class);
     }
+
+    public function appointments(): HasMany
+    {
+        return $this->hasMany(Appointment::class);
+    }
+
+    /**
+     * Record a knowledge-cutoff timestamp/message ID and clear stale conversation topic summaries
+     * so deleted or replaced documents never leak into future replies.
+     */
+    public function markKnowledgeUpdated(): void
+    {
+        $maxMessageId = (int) Message::whereHas('conversation', fn ($q) => $q->where('company_id', $this->id))
+            ->max('id');
+
+        $freshSettings = static::whereKey($this->id)->value('settings');
+        if (is_string($freshSettings)) {
+            $freshSettings = json_decode($freshSettings, true);
+        }
+        $settings = is_array($freshSettings)
+            ? $freshSettings
+            : (is_array($this->settings) ? $this->settings : []);
+
+        $settings['knowledge_updated_at'] = now()->toIso8601String();
+        $settings['knowledge_cutoff_message_id'] = $maxMessageId;
+
+        $this->forceFill(['settings' => $settings])->saveQuietly();
+
+        $staleKeys = [
+            'last_topic',
+            'last_matched_title',
+            'last_matched_row',
+            'mentioned_budget',
+            'topics',
+            'recent_topics',
+            'last_intent',
+        ];
+
+        $this->conversations()
+            ->where(fn ($q) => $q->whereNotNull('summary')->orWhereNotNull('context_data'))
+            ->get()
+            ->each(function (Conversation $conv) use ($staleKeys): void {
+                $ctx = is_array($conv->context_data) ? $conv->context_data : [];
+                foreach ($staleKeys as $key) {
+                    unset($ctx[$key]);
+                }
+
+                $conv->update([
+                    'summary' => null,
+                    'context_data' => !empty($ctx) ? $ctx : null,
+                ]);
+            });
+    }
 }
